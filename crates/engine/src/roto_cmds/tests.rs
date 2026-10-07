@@ -348,3 +348,54 @@ fn a_linked_roto_mask_follows_its_layer() {
     s.execute("layer.translate", json!({"dx": 50, "dy": 0})).unwrap();
     assert!((render(&s)[15 * 100 + 20] - 1.0).abs() < 1e-5);
 }
+
+const NUKE_SAMPLE: &str = include_str!("../../../io/tests/fixtures/nuke-roto-bezier-1.nk");
+
+#[test]
+fn nuke_export_and_import_round_trip_through_commands() {
+    let mut s = with_roto_layer(2048, 1556);
+    let imported = s.execute("roto.import_nuke", json!({"text": NUKE_SAMPLE})).unwrap();
+    assert_eq!(imported["shapes"], 1);
+    let sh = shape(&s, 1);
+    assert_eq!((sh.name.as_str(), sh.points.len()), ("Bezier1", 6));
+    assert!((sh.points[0].pos.y - 402.0).abs() < 1e-3, "y is flipped by the document height: {}", sh.points[0].pos.y);
+
+    let out = s.execute("roto.export_nuke", json!({})).unwrap();
+    assert_eq!(out["shapes"], 1);
+    let text = out["text"].as_str().unwrap().to_string();
+    assert!(text.starts_with("set cut_paste_input [stack 0]") && text.contains("Roto {"));
+
+    // Replace mode swaps the content; append mode adds to it with fresh ids.
+    s.execute("roto.import_nuke", json!({"text": text, "mode": "replace"})).unwrap();
+    assert_eq!(mask(&s).root.children.len(), 1);
+    s.execute("roto.import_nuke", json!({"text": text, "mode": "append"})).unwrap();
+    let m = mask(&s);
+    assert_eq!(m.root.children.len(), 2);
+    let (a, b) = match (&m.root.children[0], &m.root.children[1]) {
+        (Node::Shape(a), Node::Shape(b)) => (a, b),
+        _ => panic!("two shapes"),
+    };
+    assert_ne!(a.id, b.id);
+    assert!(a.points.iter().all(|p| b.points.iter().all(|q| q.id != p.id)), "point ids are unique across shapes");
+    undo(&mut s);
+    assert_eq!(mask(&s).root.children.len(), 1, "an import is one undo step");
+}
+
+#[test]
+fn nuke_import_creates_the_mask_reports_warnings_and_rejects_bad_text() {
+    let mut s = session(2048, 1556);
+    let noisy = NUKE_SAMPLE.replace("{a osw x41200000", "{a zzz 3 osw x41200000");
+    let r = s.execute("roto.import_nuke", json!({"text": noisy})).unwrap();
+    assert!(r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().is_some_and(|w| w.contains("zzz"))), "{r}");
+    assert_eq!(mask(&s).root.children.len(), 1, "a missing roto mask is created by the import");
+
+    let before = mask(&s);
+    let rev = revision(&s);
+    for bad_params in
+        [json!({"text": "Blur { size 3 }"}), json!({"text": "Roto {"}), json!({}), json!({"text": 5}), json!({"text": NUKE_SAMPLE, "mode": "merge"})]
+    {
+        assert!(s.execute("roto.import_nuke", bad_params.clone()).is_err(), "{bad_params}");
+    }
+    assert_eq!(mask(&s), before);
+    assert_eq!(revision(&s), rev);
+}

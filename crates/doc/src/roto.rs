@@ -13,9 +13,9 @@ pub const MAX_COORD: f64 = 1.0e7;
 /// Largest accepted scale factor.
 pub const MAX_SCALE: f64 = 1.0e6;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct NodeId(pub u64);
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct PointId(pub u64);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -539,6 +539,16 @@ impl RotoMask {
         Ok(child_ids)
     }
 
+    /// Copies `other`'s top-level nodes onto the top of this mask with fresh ids. Returns the new
+    /// top-level ids in order. Instance settings (density, overlap, ...) are not copied.
+    pub fn append(&mut self, other: &RotoMask) -> Vec<NodeId> {
+        let (mut next_node, mut next_point) = (self.next_node_id().0, self.next_point_id().0);
+        let copies: Vec<Node> = other.root.children.iter().map(|n| clone_fresh(n, &mut next_node, &mut next_point)).collect();
+        let ids = copies.iter().map(node_id).collect();
+        self.root.children.extend(copies);
+        ids
+    }
+
     /// Deep-copies nodes with fresh ids, each copy placed right above its original. Returns the
     /// copies' ids in the order given.
     pub fn duplicate(&mut self, ids: &[NodeId]) -> Result<Vec<NodeId>, RotoError> {
@@ -865,5 +875,27 @@ mod tests {
         let Some(Node::Group(grp)) = m.find(g) else { panic!("group") };
         assert_eq!(grp.transform, Transform2D::default());
         m.validate().unwrap();
+    }
+
+    #[test]
+    fn append_copies_nodes_with_fresh_ids_on_top() {
+        let mut dst = mask3();
+        let mut src = RotoMask::default();
+        let g = Group::new(NodeId(1), "G");
+        src.root.children.push(Node::Group(g));
+        src.root.children.push(Node::Shape(shape_with(2, 2)));
+        if let Some(Node::Group(g)) = src.find_mut(NodeId(1)) {
+            g.children.push(Node::Shape(shape_with(3, 2)));
+        }
+        let before_src = src.clone();
+        let new_ids = dst.append(&src);
+        assert_eq!(new_ids.len(), 2, "one id per top-level node");
+        assert_eq!(src, before_src, "the source is untouched");
+        assert_eq!(ids(&dst)[..3], [1, 2, 3], "existing nodes keep their ids and order");
+        assert_eq!(ids(&dst).len(), 5);
+        assert!(new_ids.iter().all(|i| *i > NodeId(3)));
+        // Ids stay unique across the whole tree, points included.
+        assert!(dst.next_node_id() > *new_ids.iter().max().unwrap_or(&NodeId(0)));
+        dst.validate().unwrap();
     }
 }

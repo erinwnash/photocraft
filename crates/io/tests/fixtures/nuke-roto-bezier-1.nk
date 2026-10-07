@@ -1,0 +1,60 @@
+set cut_paste_input [stack 0]
+version 15.0 v4
+push $cut_paste_input
+Roto {
+ output alpha
+ cliptype none
+ curves {{{v x3f99999a}
+  {f 0}
+  {n
+   {layer Root
+    {f 2097152}
+    {t x44800000 x44428000}
+    {a pt1x 0 pt1y 0 pt2x 0 pt2y 0 pt3x 0 pt3y 0 pt4x 0 pt4y 0 ptex00 0 ptex01 0 ptex02 0 ptex03 0 ptex10 0 ptex11 0 ptex12 0 ptex13 0 ptex20 0 ptex21 0 ptex22 0 ptex23 0 ptex30 0 ptex31 0 ptex32 0 ptex33 0 ptof1x 0 ptof1y 0 ptof2x 0 ptof2y 0 ptof3x 0 ptof3y 0 ptof4x 0 ptof4y 0 pterr 0 ptrefset 0 ptmot x40800000 ptref 0}
+    {curvegroup Bezier1 512 bezier
+     {{cc
+       {f 8192}
+       {px 1
+        {xc3440000 x42280000}
+        {x445a0000 x44904000}
+        {x43440000 xc2280000}
+        {xc2f40000 x42380000}
+        {x449b4000 x44874000}
+        {x42f40000 xc2380000}
+        {x43820000 x42e00000}
+        {x44a94000 x44598000}
+        {xc3820000 xc2e00000}
+        {x42840000 xc1800000}
+        {x44638000 x44398000}
+        {xc2840000 x41800000}
+        {x42840000 xc2f00000}
+        {x443b8000 x44590000}
+        {xc2840000 x42f00000}
+        {0 xc0000000}
+        {x443c8000 x448cc000}
+        {0 x40000000}}}
+      {cc
+       {f 8192}
+       {px 1
+        {xc3440000 x42280000}
+        {x42300000 x42e80000}
+        {x43440000 xc2280000}
+        {xc2f40000 x42380000}
+        {x42400000 x42940000}
+        {x42f40000 xc2380000}
+        {x43820000 x42e00000}
+        {0 0}
+        {xc3820000 xc2e00000}
+        {x42840000 xc1800000}
+        {0 0}
+        {xc2840000 x41800000}
+        {x42840000 xc2f00000}
+        {0 0}
+        {xc2840000 x42f00000}
+        {0 xc0000000}
+        {xc2fffff8 0}
+        {0 x40000000}}}}
+     {tx 1 x44751555 x44736aab}
+     {a osw x41200000 osf 0 str 1 spx x44800000 spy x44428000 sb 1 tt x40800000}}}}}}
+ name Roto1
+}

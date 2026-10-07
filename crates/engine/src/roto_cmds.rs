@@ -13,6 +13,7 @@
 
 use photocraft_doc::roto::{self, BlendOp, Falloff, Group, MAX_BLUR, Node, NodeId, OverlapMode, Point, PointId, RotoMask, Shape, V2};
 use photocraft_doc::{LayerId, RotoError};
+use photocraft_io::nuke;
 use photocraft_vector as vector;
 use serde_json::{Value, json};
 
@@ -1030,6 +1031,61 @@ fn feather_set_all(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 // ---------------------------------------------------------------------------
+// Nuke exchange
+// ---------------------------------------------------------------------------
+
+fn count_shapes(g: &Group) -> usize {
+    g.children
+        .iter()
+        .map(|n| match n {
+            Node::Shape(_) => 1,
+            Node::Group(c) => count_shapes(c),
+        })
+        .sum()
+}
+
+/// Returns the mask as Nuke script text (the UI puts it on the clipboard or in a file).
+fn export_nuke(s: &mut Session, p: &Value) -> Result<Value> {
+    let id = layer_id(s, p)?;
+    let d = s.active().ok_or(EngineError::NoDocument)?;
+    let area = d.doc.bounds();
+    let l = d.doc.layer(id).ok_or(EngineError::NoLayer(id))?;
+    let m = l.roto_mask.as_ref().ok_or_else(|| EngineError::Other("layer has no roto mask".into()))?;
+    Ok(json!({ "text": nuke::write_nk(m, f64::from(area.width()), f64::from(area.height())), "shapes": count_shapes(&m.root) }))
+}
+
+/// Reads the shapes of a Nuke Roto node from script text, replacing or appending to the mask
+/// (creating the mask when the layer has none).
+fn import_nuke(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "roto.import_nuke";
+    let text = p.get("text").and_then(Value::as_str).ok_or_else(|| bad(CMD, "`text` must be the Nuke script text"))?;
+    let append = match p.get("mode").and_then(Value::as_str) {
+        None | Some("replace") => false,
+        Some("append") => true,
+        Some(m) => return Err(bad(CMD, format!("unknown mode `{m}` (replace, append)"))),
+    };
+    let id = layer_id(s, p)?;
+    let height = f64::from(s.active().ok_or(EngineError::NoDocument)?.doc.bounds().height());
+    let (imported, warnings) = nuke::parse_nk(text, height).map_err(|e| bad(CMD, e.to_string()))?;
+    let shapes = count_shapes(&imported.root);
+    s.edit("Import Nuke Roto", |doc, _| {
+        let l = doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?;
+        if l.locks.all {
+            return Err(EngineError::Other(format!("layer \"{}\" is locked", l.name)));
+        }
+        let m = l.roto_mask.get_or_insert_with(RotoMask::default);
+        if append {
+            m.append(&imported);
+        } else {
+            m.root.children = imported.root.children.clone();
+        }
+        m.validate().map_err(|e| rerr(CMD, e))?;
+        Ok(())
+    })?;
+    Ok(json!({ "shapes": shapes, "warnings": warnings }))
+}
+
+// ---------------------------------------------------------------------------
 // Specs
 // ---------------------------------------------------------------------------
 
@@ -1070,6 +1126,24 @@ pub fn specs() -> Vec<CommandSpec> {
             r##"{"layer":id?,"enabled":bool?,"linked":bool?,"density":0..1?,"invert":bool?,"overlap":"max|sum|over"?,"backend":"auto|cpu|gpu"?} → layer.roto.info"##,
             has_roto,
             instance_set
+        ),
+        CommandSpec {
+            id: "roto.export_nuke",
+            label: "Export to Nuke",
+            menu: &[],
+            shortcut: None,
+            params: r##"{"layer":id?} → {text,shapes} (a .nk fragment with one Roto node; the UI copies it to the clipboard or saves it)"##,
+            enabled: has_roto,
+            run: export_nuke,
+            journal: false,
+        },
+        spec!(
+            "roto.import_nuke",
+            "Import from Nuke",
+            [],
+            r##"{"layer":id?,"text":str (a .nk file, or a copied Roto node),"mode":"replace|append"="replace"} → {shapes,warnings:[str]}; creates the roto mask if the layer has none. Static shapes only: animation, strokes and unconfirmed attributes are skipped and listed in warnings"##,
+            has_layer,
+            import_nuke
         ),
         spec!(
             "roto.node.add_shape",

@@ -32,6 +32,7 @@ mod flat;
 mod gradient_bake;
 pub mod linked;
 mod multichannel_map;
+pub mod nuke;
 pub mod pattern_map;
 mod pixels;
 mod psd_export;
