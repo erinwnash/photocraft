@@ -1,3 +1,8 @@
+//! The roto evaluator: one tree walk (groups, transforms, opacity, blend ops) that drives an
+//! [`Executor`]. The CPU executor here is the oracle; an accelerator (see `dispatch.rs`) supplies
+//! its own executor for the per-pixel primitives, so both backends share every decision about
+//! *what* to compute and differ only in *where* the arithmetic runs.
+
 use photocraft_doc::RotoMask;
 use photocraft_doc::roto::{BlendOp, Group, Node, OverlapMode, Shape, Transform2D};
 use photocraft_geom::Rect;
@@ -8,46 +13,81 @@ use super::curve::outline_path;
 use super::feather::feathered_coverage;
 
 /// Pixels the evaluator will allocate for one call (guards hostile rects).
-const MAX_PIXELS: usize = 1 << 28;
+pub const MAX_PIXELS: usize = 1 << 28;
 
-/// Coverage of `m` over `rect` (row-major, `0..=1`). An empty or oversized rect gives an empty
-/// vec; an invalid mask (see [`RotoMask::validate`]) gives zeros.
-pub fn roto_values(m: &RotoMask, rect: Rect) -> Vec<f32> {
-    let (w, h) = (rect.width() as usize, rect.height() as usize);
-    let Some(n) = w.checked_mul(h).filter(|n| *n <= MAX_PIXELS) else { return Vec::new() };
-    if n == 0 {
-        return Vec::new();
-    }
-    if m.validate().is_err() {
-        return vec![0.0; n];
-    }
-    let mut acc = vec![0.0f32; n];
-    // The root group's transform is the outermost one (it moves a linked mask with its layer).
-    let mut xf: Vec<Transform2D> = vec![m.root.transform];
-    eval_children(&m.root, rect, m.overlap, &mut xf, &mut acc);
-    for v in &mut acc {
-        let x = v.clamp(0.0, 1.0) * m.density;
-        *v = if m.invert { 1.0 - x } else { x };
-    }
-    acc
+/// The per-pixel primitives the tree walk needs. Planes are row-major `f32` over a [`Rect`].
+pub trait Executor {
+    /// An accumulator plane over the walk's rect.
+    type Acc;
+
+    /// A fresh, all-zero accumulator.
+    fn new_acc(&mut self) -> Self::Acc;
+
+    /// Combines one shape into `acc`. `raw` is the shape's coverage over `raw_rect` (its outline
+    /// and feather, before blur and invert); `rect` is the walk's rect and lies inside `raw_rect`,
+    /// which is grown by the blur's reach so blurred edges are not clamped. In order: blur `raw`
+    /// by `blur` (px, 0 = none), crop to `rect`, invert if asked, then
+    /// `acc = acc + (blend(op, acc, shape) - acc) * opacity`.
+    #[allow(clippy::too_many_arguments)]
+    fn combine_shape(&mut self, acc: &mut Self::Acc, raw: &[f32], raw_rect: Rect, rect: Rect, blur: f32, invert: bool, op: BlendOp, opacity: f32);
+
+    /// `dst = dst + (blend(op, dst, src) - dst) * opacity`, consuming the group accumulator `src`.
+    fn combine_acc(&mut self, dst: &mut Self::Acc, src: Self::Acc, op: BlendOp, opacity: f32);
+
+    /// The final plane: clamp to `0..=1`, times `density`, then inverted when asked.
+    fn finish(&mut self, acc: Self::Acc, density: f32, invert: bool) -> Vec<f32>;
 }
 
-fn eval_children(g: &Group, rect: Rect, mode: OverlapMode, xf: &mut Vec<Transform2D>, acc: &mut [f32]) {
+/// Pixel count of `rect`, or the answer to give *instead* of evaluating: an empty or oversized
+/// rect gives an empty plane, an invalid mask (see [`RotoMask::validate`]) gives zeros.
+pub fn prepare(m: &RotoMask, rect: Rect) -> Result<usize, Vec<f32>> {
+    let (w, h) = (rect.width() as usize, rect.height() as usize);
+    let Some(n) = w.checked_mul(h).filter(|n| *n <= MAX_PIXELS) else { return Err(Vec::new()) };
+    if n == 0 {
+        return Err(Vec::new());
+    }
+    if m.validate().is_err() {
+        return Err(vec![0.0; n]);
+    }
+    Ok(n)
+}
+
+/// Evaluates `m` over `rect` with `exec`. Call [`prepare`] first and only run when it is `Ok`.
+pub fn run<E: Executor>(m: &RotoMask, rect: Rect, exec: &mut E) -> Vec<f32> {
+    let mut acc = exec.new_acc();
+    // The root group's transform is the outermost one (it moves a linked mask with its layer).
+    let mut xf: Vec<Transform2D> = vec![m.root.transform];
+    walk(&m.root, rect, m.overlap, &mut xf, exec, &mut acc);
+    exec.finish(acc, m.density, m.invert)
+}
+
+fn walk<E: Executor>(g: &Group, rect: Rect, mode: OverlapMode, xf: &mut Vec<Transform2D>, exec: &mut E, acc: &mut E::Acc) {
     for node in &g.children {
         match node {
             Node::Shape(s) if s.visible => {
-                let cov = shape_coverage(s, rect, xf, mode);
-                combine(acc, &cov, s.blend_op, s.opacity);
+                let (raw, raw_rect) = shape_plane(s, rect, xf, mode);
+                exec.combine_shape(acc, &raw, raw_rect, rect, s.blur, s.invert, s.blend_op, s.opacity);
             }
             Node::Group(c) if c.visible => {
-                let mut iso = vec![0.0f32; acc.len()];
+                let mut iso = exec.new_acc();
                 xf.push(c.transform);
-                eval_children(c, rect, mode, xf, &mut iso);
+                walk(c, rect, mode, xf, exec, &mut iso);
                 xf.pop();
-                combine(acc, &iso, c.blend_op, c.opacity);
+                exec.combine_acc(acc, iso, c.blend_op, c.opacity);
             }
             _ => {}
         }
+    }
+}
+
+/// The CPU executor: the reference arithmetic every other backend is measured against.
+pub struct CpuExecutor {
+    pixels: usize,
+}
+
+impl CpuExecutor {
+    pub fn new(rect: Rect) -> Self {
+        CpuExecutor { pixels: rect.width() as usize * rect.height() as usize }
     }
 }
 
@@ -57,6 +97,60 @@ fn combine(acc: &mut [f32], src: &[f32], op: BlendOp, opacity: f32) {
         let blended = blend(op, below, *b);
         // Opacity mixes the blended result with what was beneath.
         *a = below + (blended - below) * opacity;
+    }
+}
+
+impl Executor for CpuExecutor {
+    type Acc = Vec<f32>;
+
+    fn new_acc(&mut self) -> Vec<f32> {
+        vec![0.0; self.pixels]
+    }
+
+    fn combine_shape(&mut self, acc: &mut Vec<f32>, raw: &[f32], raw_rect: Rect, rect: Rect, blur: f32, invert: bool, op: BlendOp, opacity: f32) {
+        let (w, h) = (rect.width() as usize, rect.height() as usize);
+        let mut plane: Vec<f32> = if blur > 0.0 {
+            let (gw, gh) = (raw_rect.width() as usize, raw_rect.height() as usize);
+            let mut big = raw.to_vec();
+            blur_plane(&mut big, gw, gh, blur);
+            let (dx, dy) = (rect.x0.saturating_sub(raw_rect.x0).max(0) as usize, rect.y0.saturating_sub(raw_rect.y0).max(0) as usize);
+            let mut out = Vec::with_capacity(w * h);
+            for row in 0..h {
+                let start = (row + dy) * gw + dx;
+                out.extend_from_slice(big.get(start..start + w).unwrap_or(&[]));
+            }
+            out.resize(w * h, 0.0);
+            out
+        } else {
+            raw.to_vec()
+        };
+        if invert {
+            for x in &mut plane {
+                *x = 1.0 - *x;
+            }
+        }
+        combine(acc, &plane, op, opacity);
+    }
+
+    fn combine_acc(&mut self, dst: &mut Vec<f32>, src: Vec<f32>, op: BlendOp, opacity: f32) {
+        combine(dst, &src, op, opacity);
+    }
+
+    fn finish(&mut self, mut acc: Vec<f32>, density: f32, invert: bool) -> Vec<f32> {
+        for v in &mut acc {
+            let x = v.clamp(0.0, 1.0) * density;
+            *v = if invert { 1.0 - x } else { x };
+        }
+        acc
+    }
+}
+
+/// Coverage of `m` over `rect` (row-major, `0..=1`) on the CPU. An empty or oversized rect gives
+/// an empty vec; an invalid mask (see [`RotoMask::validate`]) gives zeros.
+pub fn roto_values(m: &RotoMask, rect: Rect) -> Vec<f32> {
+    match prepare(m, rect) {
+        Err(answer) => answer,
+        Ok(_) => run(m, rect, &mut CpuExecutor::new(rect)),
     }
 }
 
@@ -72,40 +166,20 @@ fn raw_coverage(s: &Shape, rect: Rect, chain: &[Transform2D], mode: OverlapMode)
     crate::path_coverage(&path, rect)
 }
 
-/// One shape's coverage over `rect`. `xf` holds the enclosing groups' transforms, outermost first.
-pub(crate) fn shape_coverage(s: &Shape, rect: Rect, xf: &[Transform2D], mode: OverlapMode) -> Vec<f32> {
+/// One shape's coverage before blur and invert, and the rect it covers: `rect` itself, or `rect`
+/// grown by the blur's reach (so a blur sees the shape's true surroundings) when the shape is
+/// blurred and the grown plane fits. `xf` holds the enclosing groups' transforms, outermost first.
+fn shape_plane(s: &Shape, rect: Rect, xf: &[Transform2D], mode: OverlapMode) -> (Vec<f32>, Rect) {
     let mut chain = Vec::with_capacity(xf.len() + 1);
     chain.push(s.transform);
     chain.extend(xf.iter().rev().copied());
-    let (w, h) = (rect.width() as usize, rect.height() as usize);
-    let mut v = if s.blur > 0.0 {
-        // Compute on a rect grown by the blur's reach so the plane's edges are constant, then crop.
+    let mut area = rect;
+    if s.blur > 0.0 {
         let m = (s.blur * 3.0).ceil() as i32 + 2;
         let grown = Rect::new(rect.x0.saturating_sub(m), rect.y0.saturating_sub(m), rect.x1.saturating_add(m), rect.y1.saturating_add(m));
-        let (gw, gh) = (grown.width() as usize, grown.height() as usize);
-        if gw.checked_mul(gh).is_some_and(|n| n <= MAX_PIXELS) {
-            let mut big = raw_coverage(s, grown, &chain, mode);
-            blur_plane(&mut big, gw, gh, s.blur);
-            let mut out = Vec::with_capacity(w * h);
-            let (dx, dy) = ((rect.x0 - grown.x0) as usize, (rect.y0 - grown.y0) as usize);
-            for row in 0..h {
-                let start = (row + dy) * gw + dx;
-                out.extend_from_slice(big.get(start..start + w).unwrap_or(&[]));
-            }
-            out.resize(w * h, 0.0);
-            out
-        } else {
-            let mut plane = raw_coverage(s, rect, &chain, mode);
-            blur_plane(&mut plane, w, h, s.blur);
-            plane
-        }
-    } else {
-        raw_coverage(s, rect, &chain, mode)
-    };
-    if s.invert {
-        for x in &mut v {
-            *x = 1.0 - *x;
+        if (grown.width() as usize).checked_mul(grown.height() as usize).is_some_and(|n| n <= MAX_PIXELS) {
+            area = grown;
         }
     }
-    v
+    (raw_coverage(s, area, &chain, mode), area)
 }

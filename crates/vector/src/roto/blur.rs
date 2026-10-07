@@ -1,14 +1,20 @@
+/// The box half-width of each of the three passes that approximate a Gaussian of `sigma = radius`
+/// (box widths whose three-pass variance matches sigma²: Wells 1986 / Kovesi). Zero means the
+/// blur is a no-op. Shared with accelerated backends so they use the same widths.
+pub fn box_radius(radius: f32) -> usize {
+    if !(radius.is_finite() && radius > 0.0) {
+        return 0;
+    }
+    let ideal = (12.0 * radius * radius / 3.0 + 1.0).sqrt();
+    (((ideal.floor() as usize) | 1).max(1) - 1) / 2
+}
+
 /// Approximate Gaussian blur of a `w`×`h` plane with `sigma = radius`: three box passes per axis,
 /// edges clamped (the caller grows the plane so edges are constant). The same scheme as the
 /// mask feather in `photocraft-compose`, which sits in a higher layer and cannot be shared.
 pub(crate) fn blur_plane(v: &mut [f32], w: usize, h: usize, radius: f32) {
-    if !(radius.is_finite() && radius > 0.0) || w == 0 || h == 0 || v.len() < w * h {
-        return;
-    }
-    // Box widths whose three-pass variance matches sigma² (Wells 1986 / Kovesi).
-    let ideal = (12.0 * radius * radius / 3.0 + 1.0).sqrt();
-    let r = (((ideal.floor() as usize) | 1).max(1) - 1) / 2;
-    if r == 0 {
+    let r = box_radius(radius);
+    if r == 0 || w == 0 || h == 0 || v.len() < w * h {
         return;
     }
     let mut line = Vec::new();

@@ -121,7 +121,7 @@ pub fn combined_mask(layer: &Layer, canvas: Rect) -> Option<Surface> {
     // Far outside the path the vector mask is constant.
     let far = Rect::from_xywh(canvas.x0 - 1_000_000, canvas.y0 - 1_000_000, 1, 1);
     let v_out = vm.map_or(1.0, |vm| photocraft_vector::vector_mask_values(vm, far)[0])
-        * roto.map_or(1.0, |r| photocraft_vector::roto::roto_values(r, far).first().copied().unwrap_or(1.0));
+        * roto.map_or(1.0, |r| photocraft_vector::roto::roto_values_auto(r, far).first().copied().unwrap_or(1.0));
     let p_def = pixel.map_or(1.0, |m| {
         let d = m.surface.default_pixel().first().copied().unwrap_or(1.0);
         1.0 - m.density * (1.0 - d)
@@ -164,7 +164,7 @@ pub fn combined_mask(layer: &Layer, canvas: Rect) -> Option<Surface> {
         };
         gaussian(&mut v, w, h, sv);
         if let Some(r) = roto {
-            for (a, b) in v.iter_mut().zip(photocraft_vector::roto::roto_values(r, area)) {
+            for (a, b) in v.iter_mut().zip(photocraft_vector::roto::roto_values_auto(r, area)) {
                 *a *= b;
             }
         }

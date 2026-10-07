@@ -4,10 +4,13 @@
 mod blend;
 mod blur;
 mod curve;
+mod dispatch;
 mod eval;
 mod feather;
 #[cfg(test)]
 mod tests;
 
 pub use blend::blend;
-pub use eval::roto_values;
+pub use blur::box_radius;
+pub use dispatch::{AUTO_MIN_PIXELS, Accelerator, has_accelerator, roto_values_auto, set_accelerator};
+pub use eval::{CpuExecutor, Executor, MAX_PIXELS, prepare, roto_values, run};
