@@ -19,6 +19,7 @@
 
 pub mod flatten;
 pub mod raster;
+pub mod roto;
 pub mod shapes;
 pub mod stroke;
 pub mod trace;

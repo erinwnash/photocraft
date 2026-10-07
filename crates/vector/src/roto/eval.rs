@@ -1,0 +1,70 @@
+use photocraft_doc::RotoMask;
+use photocraft_doc::roto::{BlendOp, Group, Node, Shape, Transform2D};
+use photocraft_geom::Rect;
+
+use super::blend::blend;
+use super::curve::outline_path;
+
+/// Pixels the evaluator will allocate for one call (guards hostile rects).
+const MAX_PIXELS: usize = 1 << 28;
+
+/// Coverage of `m` over `rect` (row-major, `0..=1`). An empty or oversized rect gives an empty
+/// vec; an invalid mask (see [`RotoMask::validate`]) gives zeros.
+pub fn roto_values(m: &RotoMask, rect: Rect) -> Vec<f32> {
+    let (w, h) = (rect.width() as usize, rect.height() as usize);
+    let Some(n) = w.checked_mul(h).filter(|n| *n <= MAX_PIXELS) else { return Vec::new() };
+    if n == 0 {
+        return Vec::new();
+    }
+    if m.validate().is_err() {
+        return vec![0.0; n];
+    }
+    let mut acc = vec![0.0f32; n];
+    let mut xf: Vec<Transform2D> = Vec::new();
+    eval_children(&m.root, rect, &mut xf, &mut acc);
+    for v in &mut acc {
+        let x = v.clamp(0.0, 1.0) * m.density;
+        *v = if m.invert { 1.0 - x } else { x };
+    }
+    acc
+}
+
+fn eval_children(g: &Group, rect: Rect, xf: &mut Vec<Transform2D>, acc: &mut [f32]) {
+    for node in &g.children {
+        match node {
+            Node::Shape(s) if s.visible => {
+                let cov = shape_coverage(s, rect, xf);
+                combine(acc, &cov, s.blend_op, s.opacity);
+            }
+            Node::Group(c) if c.visible => {
+                let mut iso = vec![0.0f32; acc.len()];
+                xf.push(c.transform);
+                eval_children(c, rect, xf, &mut iso);
+                xf.pop();
+                combine(acc, &iso, c.blend_op, c.opacity);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn combine(acc: &mut [f32], src: &[f32], op: BlendOp, opacity: f32) {
+    for (a, b) in acc.iter_mut().zip(src) {
+        let below = *a;
+        let blended = blend(op, below, *b);
+        // Opacity mixes the blended result with what was beneath.
+        *a = below + (blended - below) * opacity;
+    }
+}
+
+/// One shape's coverage. `xf` holds the enclosing groups' transforms, outermost first.
+pub(crate) fn shape_coverage(s: &Shape, rect: Rect, xf: &[Transform2D]) -> Vec<f32> {
+    let mut chain = Vec::with_capacity(xf.len() + 1);
+    chain.push(s.transform);
+    chain.extend(xf.iter().rev().copied());
+    let path = outline_path(s, &chain, false);
+    if path.subpaths.is_empty() {
+        return vec![0.0; rect.width() as usize * rect.height() as usize];
+    }
+    crate::path_coverage(&path, rect)
+}
