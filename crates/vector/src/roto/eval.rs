@@ -61,21 +61,31 @@ pub fn run<E: Executor>(m: &RotoMask, rect: Rect, exec: &mut E) -> Vec<f32> {
     exec.finish(acc, m.density, m.invert)
 }
 
+/// Whether a node draws anything: a shape needs a visible outline (two points or more), a group
+/// at least one visible node that does. Nodes that draw nothing are skipped rather than composited
+/// as empty coverage, which under Multiply or Intersect would wipe the mask beneath them (a shape
+/// still being drawn, or a group the user has emptied, must not blank the mask).
+fn renders(n: &Node) -> bool {
+    match n {
+        Node::Shape(s) => s.visible && s.points.len() >= 2,
+        Node::Group(g) => g.visible && g.children.iter().any(renders),
+    }
+}
+
 fn walk<E: Executor>(g: &Group, rect: Rect, mode: OverlapMode, xf: &mut Vec<Transform2D>, exec: &mut E, acc: &mut E::Acc) {
-    for node in &g.children {
+    for node in g.children.iter().filter(|n| renders(n)) {
         match node {
-            Node::Shape(s) if s.visible => {
+            Node::Shape(s) => {
                 let (raw, raw_rect) = shape_plane(s, rect, xf, mode);
                 exec.combine_shape(acc, &raw, raw_rect, rect, s.blur, s.invert, s.blend_op, s.opacity);
             }
-            Node::Group(c) if c.visible => {
+            Node::Group(c) => {
                 let mut iso = exec.new_acc();
                 xf.push(c.transform);
                 walk(c, rect, mode, xf, exec, &mut iso);
                 xf.pop();
                 exec.combine_acc(acc, iso, c.blend_op, c.opacity);
             }
-            _ => {}
         }
     }
 }

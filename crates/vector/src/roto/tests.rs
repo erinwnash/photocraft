@@ -269,3 +269,40 @@ fn feather_tangents_are_relative_and_a_scaled_feather_is_an_even_offset() {
         assert!((a - 0.5).abs() < 0.1, "angle {deg}: {a}");
     }
 }
+
+#[test]
+fn nodes_with_nothing_to_draw_contribute_nothing_even_under_multiply_or_intersect() {
+    let base = mask_with(vec![square(1, 10.0, 10.0, 50.0, 50.0)]);
+    let want = roto_values(&base, Rect::new(0, 0, 64, 64));
+    for op in [BlendOp::Multiply, BlendOp::Intersect, BlendOp::Min, BlendOp::Subtract, BlendOp::Difference] {
+        // A shape still being drawn (one point), an empty group, and a group of hidden shapes.
+        let mut lone = Shape::new(NodeId(2), "lone");
+        lone.points.push(Point::corner(PointId(20), 30.0, 30.0));
+        lone.blend_op = op;
+        let mut empty = Group::new(NodeId(3), "empty");
+        empty.blend_op = op;
+        let mut hidden = Group::new(NodeId(4), "hidden");
+        hidden.blend_op = op;
+        let mut h = square(5, 0.0, 0.0, 60.0, 60.0);
+        h.visible = false;
+        hidden.children.push(Node::Shape(h));
+        let mut m = base.clone();
+        m.root.children.push(Node::Shape(lone));
+        m.root.children.push(Node::Group(empty));
+        m.root.children.push(Node::Group(hidden));
+        assert_eq!(roto_values(&m, Rect::new(0, 0, 64, 64)), want, "{op:?}");
+    }
+    // A real shape that covers nothing in view still does its job: intersecting with it clears the mask.
+    let mut far = square(6, 500.0, 500.0, 520.0, 520.0);
+    far.blend_op = BlendOp::Intersect;
+    let mut m = base.clone();
+    m.root.children.push(Node::Shape(far));
+    assert!(roto_values(&m, Rect::new(0, 0, 64, 64)).iter().all(|v| *v == 0.0));
+    // And a zero-opacity shape changes nothing, whatever its blend op.
+    let mut zero = square(7, 0.0, 0.0, 64.0, 64.0);
+    zero.blend_op = BlendOp::Multiply;
+    zero.opacity = 0.0;
+    let mut m = base.clone();
+    m.root.children.push(Node::Shape(zero));
+    assert_eq!(roto_values(&m, Rect::new(0, 0, 64, 64)), want);
+}

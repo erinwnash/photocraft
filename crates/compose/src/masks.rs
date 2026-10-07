@@ -33,7 +33,7 @@ fn key(layer: &Layer, canvas: Rect) -> u64 {
     layer.id.0.hash(&mut h);
     (canvas.x0, canvas.y0, canvas.x1, canvas.y1).hash(&mut h);
     format!("{:?}", layer.vector_mask).hash(&mut h);
-    format!("{:?}", layer.roto_mask).hash(&mut h);
+    layer.roto_mask.as_ref().map(photocraft_doc::RotoMask::fingerprint).hash(&mut h);
     if let Some(m) = &layer.mask {
         (m.enabled, m.density.to_bits(), m.feather.to_bits()).hash(&mut h);
         format!("{:?}", m.surface.default_pixel()).hash(&mut h);

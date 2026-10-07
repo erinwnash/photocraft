@@ -579,7 +579,8 @@ pub(crate) fn shape_key(layer: &Layer, canvas: Rect) -> u64 {
     if let Some(m) = &layer.mask {
         (m.enabled, m.density.to_bits(), m.feather.to_bits()).hash(&mut h);
     }
-    format!("{:?}{:?}", layer.vector_mask, layer.roto_mask).hash(&mut h);
+    format!("{:?}", layer.vector_mask).hash(&mut h);
+    layer.roto_mask.as_ref().map(photocraft_doc::RotoMask::fingerprint).hash(&mut h);
     h.finish()
 }
 
@@ -617,7 +618,8 @@ pub(crate) fn group_key(layer: &Layer, light: &GlobalLight) -> u64 {
             (m.enabled, m.density.to_bits(), m.feather.to_bits()).hash(h);
             surface_fp(&m.surface, h);
         }
-        format!("{:?}{:?}{:?}", l.vector_mask, l.roto_mask, l.effects).hash(h);
+        format!("{:?}{:?}", l.vector_mask, l.effects).hash(h);
+        l.roto_mask.as_ref().map(photocraft_doc::RotoMask::fingerprint).hash(h);
         h.write_u8(0xfe);
     }
     let mut h = std::collections::hash_map::DefaultHasher::new();

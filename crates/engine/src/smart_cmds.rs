@@ -422,7 +422,7 @@ fn detach_psd(l: &mut Layer) {
 // ---------- conversion ----------
 
 /// Moves a layer (any kind) by whole pixels without re-rendering anything.
-fn shift_layer(l: &mut Layer, dx: i32, dy: i32) {
+pub(crate) fn shift_layer(l: &mut Layer, dx: i32, dy: i32) {
     if dx == 0 && dy == 0 {
         return;
     }
@@ -433,6 +433,9 @@ fn shift_layer(l: &mut Layer, dx: i32, dy: i32) {
     }
     if let Some(vm) = &mut l.vector_mask {
         vm.path = vm.path.transform(&a);
+    }
+    if let Some(r) = &mut l.roto_mask {
+        r.apply_affine(&a);
     }
     if let Some(fc) = &mut l.fill_cache {
         fc.surface = mv(&fc.surface);

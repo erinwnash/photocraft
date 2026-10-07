@@ -56,6 +56,7 @@ fn flattened_planes(doc: &Document) -> Vec<Vec<f32>> {
             && l.fill_opacity >= 1.0
             && l.mask.is_none()
             && l.vector_mask.is_none()
+            && l.roto_mask.is_none()
             && !photocraft_compose::effects::has_effects(l) =>
         {
             match &l.content {

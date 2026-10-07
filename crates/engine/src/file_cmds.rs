@@ -753,6 +753,7 @@ fn flatten_all_effects(s: &mut Session) -> Result<Value> {
             l.effects = Default::default();
             l.mask = None;
             l.vector_mask = None;
+            l.roto_mask = None;
             l.fill_opacity = 1.0;
             l.fill_cache = None;
             l.psd_blocks.retain(|(k, _)| !matches!(k, b"TySh" | b"SoLd" | b"PlLd" | b"SoLE" | b"vmsk" | b"vsms" | b"vogk" | b"vscg" | b"vstk"));
@@ -770,7 +771,7 @@ fn flatten_all_masks(s: &mut Session) -> Result<Value> {
         let fmt = doc.pixel_format();
         for id in walk_ids(doc) {
             let Some(l) = doc.layer(id) else { continue };
-            let masked = l.mask.as_ref().is_some_and(|m| m.enabled) || l.vector_mask.is_some();
+            let masked = l.mask.as_ref().is_some_and(|m| m.enabled) || l.vector_mask.is_some() || l.roto_mask.is_some();
             if !masked {
                 continue;
             }
@@ -785,6 +786,7 @@ fn flatten_all_masks(s: &mut Session) -> Result<Value> {
             l.content = LayerContent::Raster(px);
             l.mask = None;
             l.vector_mask = None;
+            l.roto_mask = None;
             l.psd_blocks.retain(|(k, _)| !matches!(k, b"vmsk" | b"vsms"));
             n += 1;
         }
@@ -848,6 +850,7 @@ pub fn bake_cube(doc: &Document, size: usize, title: &str) -> String {
         // Masks and clipping are spatial; a LUT is the adjustment stack's colour mapping.
         a.mask = None;
         a.vector_mask = None;
+        a.roto_mask = None;
         a.clipped = false;
         lattice.layers.push(a);
     }

@@ -399,3 +399,131 @@ fn nuke_import_creates_the_mask_reports_warnings_and_rejects_bad_text() {
     assert_eq!(mask(&s), before);
     assert_eq!(revision(&s), rev);
 }
+
+// ---------------------------------------------------------------------------------------------
+// Other engine features that strip, apply or bake masks must treat a roto mask like the others.
+
+fn pixel_layer(s: &mut Session, name: &str) -> photocraft_doc::LayerId {
+    s.execute("layer.new.layer", json!({"name": name})).unwrap();
+    let id = s.active().unwrap().active_layer.unwrap();
+    let st = s.active_mut().unwrap();
+    let doc = std::sync::Arc::make_mut(&mut st.doc);
+    let (w, h) = (doc.size.width as i32, doc.size.height as i32);
+    doc.layer_mut(id).unwrap().surface_mut().unwrap().fill_rect(Rect::new(0, 0, w, h), &[1.0, 0.0, 0.0, 1.0]);
+    id
+}
+
+#[test]
+fn flatten_all_masks_folds_a_roto_mask_into_the_pixels_exactly_once() {
+    let mut s = session(80, 60);
+    let id = pixel_layer(&mut s, "Px");
+    s.execute("layer.roto.add", json!({})).unwrap();
+    add_rect(&mut s, 20.0, 15.0, 40.0, 30.0);
+    s.execute("roto.feather.set_all", json!({"distance": 8.0})).unwrap();
+    let before = photocraft_compose::flatten(&s.active().unwrap().doc);
+    s.execute("file.scripts.flattenAllMasks", json!({})).unwrap();
+    let doc = &s.active().unwrap().doc;
+    let l = doc.layer(id).unwrap();
+    assert!(l.roto_mask.is_none() && l.mask.is_none(), "the mask now lives in the pixels");
+    let after = photocraft_compose::flatten(doc);
+    let worst = before.px.iter().zip(&after.px).map(|(a, b)| (0..4).map(|k| (a[k] - b[k]).abs()).fold(0.0f32, f32::max)).fold(0.0f32, f32::max);
+    assert!(worst <= 1.0 / 255.0 + 1e-5, "the picture is unchanged (a double-applied feather would square it): {worst}");
+    // And the soft edge really is in there: over the white background a band pixel is a pink
+    // mix, neither solid red nor white.
+    let px = after.px[(22 * 80 + 18) as usize];
+    assert!(px[1] > 0.05 && px[1] < 0.95, "{px:?}");
+}
+
+#[test]
+fn flatten_all_layer_effects_does_not_apply_a_roto_mask_twice() {
+    let mut s = session(80, 60);
+    let id = pixel_layer(&mut s, "Fx");
+    s.execute("layer.roto.add", json!({})).unwrap();
+    add_rect(&mut s, 20.0, 15.0, 40.0, 30.0);
+    s.execute("roto.feather.set_all", json!({"distance": 8.0})).unwrap();
+    {
+        let st = s.active_mut().unwrap();
+        let doc = std::sync::Arc::make_mut(&mut st.doc);
+        doc.layer_mut(id).unwrap().effects.items.push(photocraft_doc::Effect::default_drop_shadow());
+    }
+    let before = photocraft_compose::flatten(&s.active().unwrap().doc);
+    s.execute("file.scripts.flattenAllLayerEffects", json!({})).unwrap();
+    let doc = &s.active().unwrap().doc;
+    assert!(doc.layer(id).unwrap().roto_mask.is_none(), "the mask was baked with the effects");
+    let after = photocraft_compose::flatten(doc);
+    let worst = before.px.iter().zip(&after.px).map(|(a, b)| (0..4).map(|k| (a[k] - b[k]).abs()).fold(0.0f32, f32::max)).fold(0.0f32, f32::max);
+    assert!(worst <= 2.0 / 255.0, "the picture is unchanged: {worst}");
+}
+
+#[test]
+fn content_alone_ignores_the_roto_mask() {
+    let mut s = session(40, 30);
+    s.execute("layer.newFillLayer.solidColor", json!({})).unwrap();
+    s.execute("layer.roto.add", json!({})).unwrap();
+    add_rect(&mut s, 30.0, 20.0, 5.0, 5.0);
+    let st = s.active().unwrap();
+    let l = st.doc.layer(st.active_layer.unwrap()).unwrap();
+    let px = crate::extra_cmds::content_pixels(&st.doc, l).read_region(Rect::new(2, 2, 3, 3));
+    assert!(px.last().is_some_and(|a| *a > 0.99), "far from the roto shape the content is still opaque: {px:?}");
+}
+
+#[test]
+fn a_lut_export_ignores_roto_masks_on_adjustment_layers() {
+    let mut s = session(40, 30);
+    {
+        let st = s.active_mut().unwrap();
+        let doc = std::sync::Arc::make_mut(&mut st.doc);
+        let mut adj = photocraft_doc::Layer::new("inv", photocraft_doc::LayerContent::Adjustment(photocraft_doc::Adjustment::Invert));
+        // A mask that hides everything the lattice covers: masks are spatial, a LUT is not.
+        let mut m = RotoMask::default();
+        let mut sh = Shape::new(NodeId(1), "far");
+        for (i, (x, y)) in [(5000.0, 5000.0), (5010.0, 5000.0), (5010.0, 5010.0)].into_iter().enumerate() {
+            sh.points.push(photocraft_doc::roto::Point::corner(PointId(i as u64 + 1), x, y));
+        }
+        m.root.children.push(Node::Shape(sh));
+        adj.roto_mask = Some(m);
+        doc.layers.push(adj);
+    }
+    let cube = crate::file_cmds::bake_cube(&s.active().unwrap().doc, 2, "t");
+    let first = cube.lines().find(|l| l.split_whitespace().count() == 3 && l.split_whitespace().all(|t| t.parse::<f32>().is_ok())).unwrap_or("");
+    let v: Vec<f32> = first.split_whitespace().filter_map(|t| t.parse().ok()).collect();
+    assert!(v.iter().all(|x| *x > 0.99), "the black corner of the cube is inverted: {first}");
+}
+
+#[test]
+fn shifting_a_layer_moves_its_roto_mask() {
+    let mut l = photocraft_doc::Layer::raster("l", photocraft_color::PixelFormat::RGBA8);
+    let mut m = RotoMask::default();
+    let mut sh = Shape::new(NodeId(1), "s");
+    for (i, (x, y)) in [(10.0, 10.0), (30.0, 10.0), (30.0, 30.0), (10.0, 30.0)].into_iter().enumerate() {
+        sh.points.push(photocraft_doc::roto::Point::corner(PointId(i as u64 + 1), x, y));
+    }
+    m.root.children.push(Node::Shape(sh));
+    l.roto_mask = Some(m);
+    crate::smart_cmds::shift_layer(&mut l, 7, 3);
+    let v = vector::roto::roto_values(l.roto_mask.as_ref().unwrap(), Rect::new(0, 0, 60, 60));
+    assert!((v[20 * 60 + 25] - 1.0).abs() < 1e-5, "inside the moved square");
+    assert!(v[12 * 60 + 12].abs() < 1e-5, "the old corner is empty now");
+}
+
+#[test]
+fn a_maximum_size_freehand_stroke_is_fitted_quickly_and_one_past_it_is_refused() {
+    let mut s = with_roto_layer(1000, 1000);
+    let n = 100_000;
+    // A wobbling spiral: no two samples alike, so nothing collapses before the fit.
+    let pts: Vec<Value> = (0..n)
+        .map(|i| {
+            let t = f64::from(i) / f64::from(n);
+            let r = 100.0 + 300.0 * t + (t * 900.0).sin() * 3.0;
+            json!([500.0 + r * (t * 40.0).cos(), 500.0 + r * (t * 40.0).sin()])
+        })
+        .collect();
+    let started = std::time::Instant::now();
+    let r = s.execute("roto.node.add_freehand", json!({"points": pts, "tolerance": 1.0, "closed": false})).unwrap();
+    let took = started.elapsed();
+    let count = r["points"].as_array().unwrap().len();
+    assert!((10..5000).contains(&count), "{count} fitted points");
+    assert!(took.as_secs() < 20, "fitting {n} samples took {took:?}");
+    let too_many: Vec<Value> = (0..=n).map(|i| json!([f64::from(i), 0.0])).collect();
+    assert!(s.execute("roto.node.add_freehand", json!({"points": too_many})).is_err());
+}

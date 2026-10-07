@@ -1256,7 +1256,7 @@ fn layer_identity(layer: &Layer, h: &mut std::collections::hash_map::DefaultHash
         format!("{vm:?}").hash(h);
     }
     if let Some(rm) = &layer.roto_mask {
-        format!("{rm:?}").hash(h);
+        rm.fingerprint().hash(h);
     }
     format!("{:?}", layer.effects).hash(h);
     h.write_u8(0xfe);

@@ -633,6 +633,94 @@ impl RotoMask {
     }
 }
 
+/// FNV-1a over the bytes of everything that affects how a mask renders.
+struct Fnv(u64);
+
+impl Fnv {
+    fn put(&mut self, bytes: &[u8]) {
+        for b in bytes {
+            self.0 ^= u64::from(*b);
+            self.0 = self.0.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    fn u(&mut self, v: u64) {
+        self.put(&v.to_le_bytes());
+    }
+    fn f(&mut self, v: f64) {
+        self.u(v.to_bits());
+    }
+    fn b(&mut self, v: bool) {
+        self.put(&[u8::from(v)]);
+    }
+    fn v2(&mut self, v: V2) {
+        self.f(v.x);
+        self.f(v.y);
+    }
+    fn transform(&mut self, t: &Transform2D) {
+        // Destructured without `..`: a new field must be considered here.
+        let Transform2D { translate, rotate, scale, skew, pivot } = t;
+        self.v2(*translate);
+        self.f(*rotate);
+        self.v2(*scale);
+        self.f(*skew);
+        self.v2(*pivot);
+    }
+    fn point(&mut self, p: &Point) {
+        let Point { id: _, pos, tangent_in, tangent_out, feather_pos, feather_in, feather_out, smooth } = p;
+        for v in [pos, tangent_in, tangent_out, feather_pos, feather_in, feather_out] {
+            self.v2(*v);
+        }
+        self.b(*smooth);
+    }
+    fn node(&mut self, n: &Node) {
+        match n {
+            Node::Shape(s) => {
+                let Shape { id: _, name: _, visible, locked: _, opacity, blend_op, invert, closed, points, blur, falloff, transform } = s;
+                self.put(b"S");
+                self.b(*visible);
+                self.f(f64::from(*opacity));
+                self.u(*blend_op as u64);
+                self.b(*invert);
+                self.b(*closed);
+                self.f(f64::from(*blur));
+                self.u(*falloff as u64);
+                self.transform(transform);
+                self.u(points.len() as u64);
+                points.iter().for_each(|p| self.point(p));
+            }
+            Node::Group(g) => self.group(g),
+        }
+    }
+    fn group(&mut self, g: &Group) {
+        let Group { id: _, name: _, visible, locked: _, opacity, blend_op, transform, children } = g;
+        self.put(b"G");
+        self.b(*visible);
+        self.f(f64::from(*opacity));
+        self.u(*blend_op as u64);
+        self.transform(transform);
+        self.u(children.len() as u64);
+        children.iter().for_each(|n| self.node(n));
+    }
+}
+
+impl RotoMask {
+    /// A hash of everything that affects the rendered mask (geometry, feather, blur, opacity,
+    /// blend, order, settings), and nothing that does not (ids, names, locks). Cheap and
+    /// allocation-free, for cache keys that would otherwise format the whole tree.
+    pub fn fingerprint(&self) -> u64 {
+        let RotoMask { enabled, linked, density, invert, overlap, backend, root } = self;
+        let mut h = Fnv(0xcbf2_9ce4_8422_2325);
+        h.b(*enabled);
+        h.b(*linked);
+        h.f(f64::from(*density));
+        h.b(*invert);
+        h.u(*overlap as u64);
+        h.u(*backend as u64);
+        h.group(root);
+        h.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -897,5 +985,63 @@ mod tests {
         // Ids stay unique across the whole tree, points included.
         assert!(dst.next_node_id() > *new_ids.iter().max().unwrap_or(&NodeId(0)));
         dst.validate().unwrap();
+    }
+
+    #[test]
+    fn fingerprint_tracks_exactly_what_changes_the_rendering() {
+        let base = {
+            let mut m = mask3();
+            if let Some(Node::Shape(s)) = m.root.children.first_mut() {
+                s.points[0].feather_pos = V2::new(1.0, 2.0);
+            }
+            m
+        };
+        let fp = |m: &RotoMask| m.fingerprint();
+        assert_eq!(fp(&base), fp(&base.clone()), "equal masks, equal fingerprints");
+        // Things that do not change the picture do not change the fingerprint (no cache churn).
+        let mut quiet = base.clone();
+        if let Some(Node::Shape(s)) = quiet.root.children.first_mut() {
+            s.name = "renamed".into();
+            s.locked = true;
+        }
+        assert_eq!(fp(&base), fp(&quiet), "names and locks do not render");
+        // Everything that does change it changes the fingerprint.
+        type Edit = Box<dyn Fn(&mut RotoMask)>;
+        let edits: Vec<(&str, Edit)> = vec![
+            ("density", Box::new(|m| m.density = 0.5)),
+            ("invert", Box::new(|m| m.invert = true)),
+            ("enabled", Box::new(|m| m.enabled = false)),
+            ("linked", Box::new(|m| m.linked = false)),
+            ("overlap", Box::new(|m| m.overlap = OverlapMode::Sum)),
+            ("backend", Box::new(|m| m.backend = Backend::Gpu)),
+            ("root transform", Box::new(|m| m.root.transform.translate.x = 3.0)),
+            ("point position", Box::new(|m| edit_shape(m, |s| s.points[1].pos.y += 0.001))),
+            ("tangent", Box::new(|m| edit_shape(m, |s| s.points[1].tangent_out.x = 2.0))),
+            ("feather", Box::new(|m| edit_shape(m, |s| s.points[0].feather_pos.x = 1.5))),
+            ("feather tangent", Box::new(|m| edit_shape(m, |s| s.points[0].feather_in.y = 0.5))),
+            ("smooth flag", Box::new(|m| edit_shape(m, |s| s.points[2].smooth = true))),
+            ("point count", Box::new(|m| edit_shape(m, |s| s.points.truncate(2)))),
+            ("opacity", Box::new(|m| edit_shape(m, |s| s.opacity = 0.9))),
+            ("blend op", Box::new(|m| edit_shape(m, |s| s.blend_op = BlendOp::Subtract))),
+            ("shape invert", Box::new(|m| edit_shape(m, |s| s.invert = true))),
+            ("closed", Box::new(|m| edit_shape(m, |s| s.closed = false))),
+            ("blur", Box::new(|m| edit_shape(m, |s| s.blur = 4.0))),
+            ("falloff", Box::new(|m| edit_shape(m, |s| s.falloff = Falloff::Smooth))),
+            ("visible", Box::new(|m| edit_shape(m, |s| s.visible = false))),
+            ("shape transform", Box::new(|m| edit_shape(m, |s| s.transform.rotate = 5.0))),
+            ("order", Box::new(|m| m.root.children.reverse())),
+            ("grouping", Box::new(|m| drop(m.group(&[NodeId(1), NodeId(2)], "g")))),
+        ];
+        for (what, edit) in edits {
+            let mut m = base.clone();
+            edit(&mut m);
+            assert_ne!(fp(&base), fp(&m), "{what} must change the fingerprint");
+        }
+    }
+
+    fn edit_shape(m: &mut RotoMask, f: impl FnOnce(&mut Shape)) {
+        if let Some(Node::Shape(s)) = m.root.children.first_mut() {
+            f(s);
+        }
     }
 }
