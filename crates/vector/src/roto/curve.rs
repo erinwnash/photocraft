@@ -1,4 +1,4 @@
-use photocraft_doc::roto::{Point as RotoPoint, Shape, Transform2D, V2};
+use photocraft_doc::roto::{MAX_FEATHER, Point as RotoPoint, Shape, Transform2D, V2};
 use photocraft_doc::{Knot, Path, Subpath};
 use photocraft_geom::Point;
 
@@ -19,7 +19,8 @@ fn apply(chain: &[Transform2D], p: V2) -> Point {
 
 fn knot(p: &RotoPoint, chain: &[Transform2D], feather: bool) -> Knot {
     let (base, tin, tout) = if feather {
-        (V2::new(p.pos.x + p.feather_pos.x, p.pos.y + p.feather_pos.y), p.feather_in, p.feather_out)
+        let off = V2::new(p.feather_pos.x.clamp(-MAX_FEATHER, MAX_FEATHER), p.feather_pos.y.clamp(-MAX_FEATHER, MAX_FEATHER));
+        (V2::new(p.pos.x + off.x, p.pos.y + off.y), p.feather_in, p.feather_out)
     } else {
         (p.pos, p.tangent_in, p.tangent_out)
     };
@@ -38,7 +39,11 @@ pub(crate) fn outline_path(s: &Shape, chain: &[Transform2D], feather: bool) -> P
     if s.points.len() < 2 {
         return path;
     }
-    let knots = s.points.iter().map(|p| knot(p, chain, feather)).collect();
-    path.subpaths.push(Subpath { knots, closed: s.closed, ..Default::default() });
+    path.subpaths.push(Subpath { knots: knots(s, chain, feather), closed: s.closed, ..Default::default() });
     path
+}
+
+/// The transformed knots of the shape outline or feather outline.
+pub(crate) fn knots(s: &Shape, chain: &[Transform2D], feather: bool) -> Vec<Knot> {
+    s.points.iter().map(|p| knot(p, chain, feather)).collect()
 }

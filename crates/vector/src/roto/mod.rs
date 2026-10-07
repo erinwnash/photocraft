@@ -2,8 +2,10 @@
 //! alpha coverage array. Spec: `docs/superpowers/specs/2026-10-06-roto-mask-design.md`.
 
 mod blend;
+mod blur;
 mod curve;
 mod eval;
+mod feather;
 #[cfg(test)]
 mod tests;
 
