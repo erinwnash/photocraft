@@ -233,19 +233,17 @@ fn prune(app: &mut PhotocraftApp) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Cusp, uncusp and smooth
+// Cusp and smooth
 
 /// The point commands: shell command id (menus and hotkeys: assign keys in Edit > Keyboard
 /// Shortcuts) and the engine command it runs.
-const POINT_OPS: [(&str, &str); 3] =
-    [("roto.cuspPoints", "roto.point.cusp"), ("roto.uncuspPoints", "roto.point.uncusp"), ("roto.smoothPoints", "roto.point.smooth")];
+const POINT_OPS: [(&str, &str); 2] = [("roto.cuspPoints", "roto.point.cusp"), ("roto.smoothPoints", "roto.point.smooth")];
 
 /// The button label and tooltip of a point command.
 fn point_texts(id: &str) -> (&'static str, &'static str) {
     match id {
-        "roto.cuspPoints" => (tl!("Cusp"), tl!("Cusp points: handles move independently")),
-        "roto.uncuspPoints" => (tl!("Uncusp"), tl!("Uncusp points: link the handles in a straight line")),
-        _ => (tl!("Smooth"), tl!("Smooth points: build handles from the neighbours")),
+        "roto.cuspPoints" => (tl!("Cusp"), tl!("Cusp points: make them square points (no handles)")),
+        _ => (tl!("Smooth"), tl!("Smooth points: make them bezier points with handles that average their neighbours")),
     }
 }
 
@@ -1030,6 +1028,12 @@ pub fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             }
             if crate::widgets::secondary_button(ui, tl!("Delete"), 56.0).clicked() && !ids.is_empty() {
                 acts.push(("roto.node.delete", json!({"ids": ids})));
+            }
+            // Export as an ordinary path (the work path in the Paths panel): the node chosen in the
+            // panel, or the whole mask.
+            let to_path = tl!("Export the node chosen here, or the whole mask, as a standard path (the work path)");
+            if crate::widgets::secondary_button(ui, tl!("To Path"), 70.0).on_hover_text(to_path).clicked() {
+                acts.push(("roto.export_path", one.map_or_else(|| json!({}), |id| json!({"node": id}))));
             }
             for (label, delta) in [("▲", 1i64), ("▼", -1)] {
                 if crate::widgets::secondary_button(ui, label, 26.0).clicked()

@@ -37,7 +37,6 @@ pub const UI_COMMANDS: &[(&str, &str, &[&str], Option<&str>)] = &[
     ("view.actualPixels", "100%", &["View"], Some("Cmd+1")),
     ("window.newWindowForDocument", "New Window for Document", &["Window", "Arrange"], None),
     ("roto.cuspPoints", "Cusp Points", &["Layer", "Roto Mask"], None),
-    ("roto.uncuspPoints", "Uncusp Points", &["Layer", "Roto Mask"], None),
     ("roto.smoothPoints", "Smooth Points", &["Layer", "Roto Mask"], None),
     ("roto.selectionFromMask", "Selection from Roto Mask", &["Layer", "Roto Mask"], None),
     ("window.toggle.layers", "Layers", &["Window"], Some("F7")),
@@ -123,7 +122,7 @@ pub(crate) fn invoke_unguarded(app: &mut PhotocraftApp, ctx: &egui::Context, id:
     if id == "view.proofSetup.custom" {
         return Ok(json!({"dialog": crate::filter_dialog::open(app, "view.proofSetup")}));
     }
-    // Layer › Roto Mask › Cusp, Uncusp and Smooth Points (act on the selected points).
+    // Layer › Roto Mask › Cusp and Smooth Points (act on the selected points).
     if let Some(r) = crate::roto_ui::menu(app, id, &params) {
         return r;
     }

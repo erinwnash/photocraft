@@ -864,8 +864,8 @@ fn point_transform(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
-/// Cusp, uncusp or smooth the listed points (default: all) of a shape. See `Shape::cusp_points`,
-/// `Shape::uncusp_points` and `Shape::smooth_points` for exactly what each does.
+/// Cusp or smooth the listed points (default: all) of a shape. See `Shape::cusp_points` and
+/// `Shape::smooth_points` for exactly what each does.
 fn point_shape_op(s: &mut Session, p: &Value, cmd: &'static str, label: &str, op: fn(&mut Shape, Option<&[PointId]>) -> usize) -> Result<Value> {
     let shape = node_id(cmd, p, "shape")?;
     let ids = point_ids(cmd, p, "ids")?;
@@ -884,10 +884,6 @@ fn point_shape_op(s: &mut Session, p: &Value, cmd: &'static str, label: &str, op
 
 fn point_cusp(s: &mut Session, p: &Value) -> Result<Value> {
     point_shape_op(s, p, "roto.point.cusp", "Cusp Roto Points", Shape::cusp_points)
-}
-
-fn point_uncusp(s: &mut Session, p: &Value) -> Result<Value> {
-    point_shape_op(s, p, "roto.point.uncusp", "Uncusp Roto Points", Shape::uncusp_points)
 }
 
 fn point_smooth(s: &mut Session, p: &Value) -> Result<Value> {
@@ -1061,6 +1057,39 @@ fn selection_to_shapes(s: &mut Session, p: &Value) -> Result<Value> {
         Ok((ids.iter().map(|i| i.0).collect::<Vec<_>>(), group))
     })?;
     Ok(json!({ "shapes": created.0, "group": created.1 }))
+}
+
+/// Exports the mask (or one node of it) as an ordinary path: the work path, or a saved path in the
+/// Paths panel when `name` is given (replacing a saved path of that name).
+fn export_path_cmd(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "roto.export_path";
+    let id = layer_id(s, p)?;
+    let node = match p.get("node") {
+        None | Some(Value::Null) => None,
+        Some(_) => Some(node_id(CMD, p, "node")?),
+    };
+    let name = p.get("name").and_then(Value::as_str).map(str::to_string);
+    let d = s.active().ok_or(EngineError::NoDocument)?;
+    let m = d.doc.layer(id).ok_or(EngineError::NoLayer(id))?.roto_mask.as_ref().ok_or_else(|| EngineError::Other("layer has no roto mask".into()))?;
+    let path = vector::roto::export_path(m, node).ok_or_else(|| bad(CMD, "no such node"))?;
+    if path.subpaths.is_empty() {
+        return Err(bad(CMD, "there are no visible shapes to export"));
+    }
+    let subpaths = path.subpaths.len();
+    s.edit("Roto to Path", |doc, _| {
+        match &name {
+            None => doc.work_path = Some(path),
+            Some(n) => match doc.paths.iter_mut().find(|q| q.name == *n) {
+                Some(q) => {
+                    q.path = path;
+                    q.psd_raw = None;
+                }
+                None => doc.paths.push(photocraft_doc::NamedPath { name: n.clone(), path, psd_raw: None }),
+            },
+        }
+        Ok(())
+    })?;
+    Ok(json!({ "subpaths": subpaths, "name": name }))
 }
 
 // ---------------------------------------------------------------------------
@@ -1468,6 +1497,14 @@ pub fn specs() -> Vec<CommandSpec> {
             selection_to_shapes
         ),
         spec!(
+            "roto.export_path",
+            "Roto to Path",
+            [],
+            r##"{"layer":id?,"node":id? (a group or shape; default the whole mask),"name":str? (save in the Paths panel under this name; default the work path)} → {subpaths,name}. One subpath per visible shape with transforms applied; Subtract/Intersect/Difference blend ops carry over"##,
+            has_roto,
+            export_path_cmd
+        ),
+        spec!(
             "roto.node.transform",
             "Transform Roto Node",
             [],
@@ -1512,23 +1549,15 @@ pub fn specs() -> Vec<CommandSpec> {
             "roto.point.cusp",
             "Cusp Roto Points",
             [],
-            r##"{"layer":id?,"shape":nodeId,"ids":[pointId…]? (default all)} → {changed}. Breaks the link between each point's handles so they move independently; the handles stay where they are"##,
+            r##"{"layer":id?,"shape":nodeId,"ids":[pointId…]? (default all)} → {changed}. Turns bezier points into square points: the handles are retracted into the point"##,
             has_roto,
             point_cusp
-        ),
-        spec!(
-            "roto.point.uncusp",
-            "Uncusp Roto Points",
-            [],
-            r##"{"layer":id?,"shape":nodeId,"ids":[pointId…]? (default all)} → {changed}. Links each point's handles into a straight line through it, keeping their lengths (the out handle leads; a lone handle is mirrored)"##,
-            has_roto,
-            point_uncusp
         ),
         spec!(
             "roto.point.smooth",
             "Smooth Roto Points",
             [],
-            r##"{"layer":id?,"shape":nodeId,"ids":[pointId…]? (default all)} → {changed}. Builds fresh handles from the neighbouring points so corners become smooth curves"##,
+            r##"{"layer":id?,"shape":nodeId,"ids":[pointId…]? (default all)} → {changed}. Gives each point bezier handles that average the directions of the points around it (a square point becomes a bezier point); flat at peaks and valleys, no overshoot. Works on one point or many"##,
             has_roto,
             point_smooth
         ),

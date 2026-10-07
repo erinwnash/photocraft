@@ -731,71 +731,106 @@ impl Shape {
         ids.is_none_or(|ids| ids.contains(&p.id))
     }
 
-    /// Cusp: breaks the link between a point's two handles so they move independently. The
-    /// handles themselves are left where they are. Returns how many points changed.
+    /// Cusp: turns bezier points into square (corner) points: both handles are retracted into the
+    /// point and the link between them is gone. Returns how many points were picked.
     pub fn cusp_points(&mut self, ids: Option<&[PointId]>) -> usize {
         let mut n = 0;
         for p in self.points.iter_mut().filter(|p| Self::picks(ids, p)) {
+            p.tangent_in = V2::ZERO;
+            p.tangent_out = V2::ZERO;
             p.smooth = false;
             n += 1;
         }
         n
     }
 
-    /// Uncusp: links a point's handles into a straight line through it. Each keeps its length and
-    /// the out handle leads (the in handle swings to the opposite side); a lone handle is
-    /// mirrored; a point with no handles stays as it is (use [`Shape::smooth_points`] to make
-    /// some). Returns how many points changed.
-    pub fn uncusp_points(&mut self, ids: Option<&[PointId]>) -> usize {
+    /// Smooth: replaces the picked points' handles with ones that average the directions of the
+    /// points around them, so the curve flows through each point without a kink (usually used on a
+    /// group of points, or on a single point, and on a square point it turns it into a bezier point). The rule is a cubic Hermite spline's, applied to x and y separately along
+    /// the chord length between points: the slope at a point is the central difference of its
+    /// neighbours; at a peak or valley (the coordinate turns around) it is zero, so handles are
+    /// level there and the curve does not overshoot; and it is limited (Fritsch-Carlson) so a
+    /// rising run stays rising. Handles are a third of the way along each segment. The ends of an
+    /// open shape use the one neighbour they have. The result depends only on the positions, so
+    /// smoothing twice changes nothing. Returns how many points were picked.
+    pub fn smooth_points(&mut self, ids: Option<&[PointId]>) -> usize {
+        let auto = self.auto_handles();
         let mut n = 0;
-        for p in self.points.iter_mut().filter(|p| Self::picks(ids, p)) {
-            let (out, inn) = (len2(p.tangent_out), len2(p.tangent_in));
-            if out > 1e-12 {
-                let k = inn / out;
-                p.tangent_in = if inn > 1e-12 { V2::new(-p.tangent_out.x * k, -p.tangent_out.y * k) } else { V2::new(-p.tangent_out.x, -p.tangent_out.y) };
-            } else if inn > 1e-12 {
-                p.tangent_out = V2::new(-p.tangent_in.x, -p.tangent_in.y);
+        for (p, (out, inn)) in self.points.iter_mut().zip(auto) {
+            if Self::picks(ids, p) {
+                p.tangent_out = out;
+                p.tangent_in = inn;
+                p.smooth = true;
+                n += 1;
             }
-            p.smooth = true;
-            n += 1;
         }
         n
     }
 
-    /// Smooth: gives a point fresh handles built from its neighbours (a Catmull-Rom spline: a
-    /// sixth of the way from the previous point to the next), so a corner becomes a smooth curve.
-    /// The ends of an open shape point a third of the way toward their one neighbour. The result
-    /// depends only on the positions, so smoothing twice changes nothing. Returns how many
-    /// points were marked smooth.
-    pub fn smooth_points(&mut self, ids: Option<&[PointId]>) -> usize {
+    /// The (out, in) handle of every point under the smoothing rule of [`Shape::smooth_points`].
+    fn auto_handles(&self) -> Vec<(V2, V2)> {
         let n = self.points.len();
-        let pos: Vec<V2> = self.points.iter().map(|p| p.pos).collect();
-        let mut changed = 0;
-        for (k, p) in self.points.iter_mut().enumerate() {
-            if !Self::picks(ids, p) {
-                continue;
-            }
-            changed += 1;
-            p.smooth = true;
-            if n < 2 {
-                continue;
-            }
-            let (prev, next) = if self.closed { (Some((k + n - 1) % n), Some((k + 1) % n)) } else { (k.checked_sub(1), (k + 1 < n).then_some(k + 1)) };
-            let at = |i: Option<usize>| i.and_then(|i| pos.get(i)).copied();
-            let (a, c) = (at(prev), at(next));
-            let (out, inn) = match (a, c) {
-                (Some(a), Some(c)) => {
-                    let t = V2::new((c.x - a.x) / 6.0, (c.y - a.y) / 6.0);
-                    (t, V2::new(-t.x, -t.y))
-                }
-                (None, Some(c)) => (V2::new((c.x - p.pos.x) / 3.0, (c.y - p.pos.y) / 3.0), V2::ZERO),
-                (Some(a), None) => (V2::ZERO, V2::new((a.x - p.pos.x) / 3.0, (a.y - p.pos.y) / 3.0)),
-                (None, None) => (V2::ZERO, V2::ZERO),
-            };
-            p.tangent_out = out;
-            p.tangent_in = inn;
+        if n < 2 {
+            return vec![(V2::ZERO, V2::ZERO); n];
         }
-        changed
+        let pos: Vec<V2> = self.points.iter().map(|p| p.pos).collect();
+        // Segment i runs from point i to i + 1 (the last one wraps when the shape is closed).
+        let segs = if self.closed { n } else { n - 1 };
+        let at = |i: usize| pos.get(i % n).copied().unwrap_or(V2::ZERO);
+        let chord: Vec<f64> = (0..segs).map(|i| len2(V2::new(at(i + 1).x - at(i).x, at(i + 1).y - at(i).y))).collect();
+        let seg_len = |i: usize| chord.get(i).copied().unwrap_or(0.0);
+        let slopes = |axis: fn(V2) -> f64| -> Vec<f64> {
+            let delta: Vec<f64> = (0..segs).map(|i| if seg_len(i) > 1e-12 { (axis(at(i + 1)) - axis(at(i))) / seg_len(i) } else { 0.0 }).collect();
+            let mut m: Vec<f64> = (0..n)
+                .map(|k| {
+                    let (prev, next) = if self.closed { (Some((k + n - 1) % n), Some((k + 1) % n)) } else { (k.checked_sub(1), (k + 1 < n).then_some(k + 1)) };
+                    match (prev, next) {
+                        (Some(a), Some(c)) => {
+                            let (dp, dn) = (axis(at(k)) - axis(at(a)), axis(at(c)) - axis(at(k)));
+                            let span = seg_len(a) + seg_len(k);
+                            // A peak or valley is flat; otherwise the central difference.
+                            if dp * dn < 0.0 || span <= 1e-12 { 0.0 } else { (axis(at(c)) - axis(at(a))) / span }
+                        }
+                        (None, Some(_)) => delta.get(k).copied().unwrap_or(0.0),
+                        (Some(_), None) => delta.get(k.saturating_sub(1)).copied().unwrap_or(0.0),
+                        (None, None) => 0.0,
+                    }
+                })
+                .collect();
+            // Fritsch-Carlson: alpha^2 + beta^2 <= 9 on every rising or falling segment.
+            for (i, d) in delta.iter().enumerate() {
+                let j = (i + 1) % n;
+                if d.abs() <= 1e-12 {
+                    continue;
+                }
+                let (a, b) = (m.get(i).copied().unwrap_or(0.0) / d, m.get(j).copied().unwrap_or(0.0) / d);
+                let r = a * a + b * b;
+                if r > 9.0 {
+                    let tau = 3.0 / r.sqrt();
+                    if let Some(x) = m.get_mut(i) {
+                        *x = tau * a * d;
+                    }
+                    if let Some(x) = m.get_mut(j) {
+                        *x = tau * b * d;
+                    }
+                }
+            }
+            m
+        };
+        let (mx, my) = (slopes(|v| v.x), slopes(|v| v.y));
+        (0..n)
+            .map(|k| {
+                let m = V2::new(mx.get(k).copied().unwrap_or(0.0), my.get(k).copied().unwrap_or(0.0));
+                // Out handle: a third of the next segment; in handle: a third of the previous one.
+                let out = if k < segs { seg_len(k) / 3.0 } else { 0.0 };
+                let inn = match (self.closed, k) {
+                    (true, 0) => seg_len(segs - 1) / 3.0,
+                    (false, 0) => 0.0,
+                    _ => seg_len(k - 1) / 3.0,
+                };
+                (V2::new(m.x * out, m.y * out), V2::new(-m.x * inn, -m.y * inn))
+            })
+            .collect()
     }
 }
 
@@ -1136,7 +1171,7 @@ mod tests {
     }
 
     #[test]
-    fn cusp_breaks_the_handle_link_and_leaves_the_handles_alone() {
+    fn cusp_turns_bezier_points_into_square_points() {
         let mut s = square_shape();
         for p in &mut s.points {
             p.smooth = true;
@@ -1145,30 +1180,32 @@ mod tests {
         }
         assert_eq!(s.cusp_points(Some(&[PointId(2), PointId(3)])), 2);
         assert_eq!(s.points.iter().map(|p| p.smooth).collect::<Vec<_>>(), vec![true, false, false, true]);
-        assert!(s.points.iter().all(|p| p.tangent_out == v(10.0, 0.0) && p.tangent_in == v(-10.0, 0.0)));
+        assert_eq!(s.points.iter().map(|p| p.tangent_out == V2::ZERO && p.tangent_in == V2::ZERO).collect::<Vec<_>>(), vec![false, true, true, false]);
         assert_eq!(s.cusp_points(None), 4, "no ids means every point");
-        assert!(s.points.iter().all(|p| !p.smooth));
+        assert!(s.points.iter().all(|p| !p.smooth && p.tangent_out == V2::ZERO && p.tangent_in == V2::ZERO));
     }
 
     #[test]
-    fn uncusp_links_the_handles_keeping_each_length_with_the_out_handle_leading() {
+    fn smooth_turns_a_square_point_into_a_bezier_point_and_replaces_old_handles() {
         let mut s = square_shape();
-        s.points[0].tangent_out = v(10.0, 0.0);
-        s.points[0].tangent_in = v(0.0, -5.0); // a corner: handles at right angles
-        s.points[1].tangent_out = v(0.0, 8.0); // only one handle
-        s.points[2].tangent_in = v(-4.0, 3.0); // only the other
-        assert_eq!(s.uncusp_points(None), 4);
+        s.points[0].tangent_out = v(3.0, 40.0);
+        s.points[0].tangent_in = v(0.0, -5.0);
+        assert_eq!(s.smooth_points(Some(&[PointId(1), PointId(4)])), 2);
         let near = |a: V2, b: V2| (a.x - b.x).abs() < 1e-9 && (a.y - b.y).abs() < 1e-9;
-        assert!(near(s.points[0].tangent_in, v(-5.0, 0.0)), "opposite the out handle, length 5: {:?}", s.points[0].tangent_in);
-        assert!(near(s.points[0].tangent_out, v(10.0, 0.0)), "the out handle does not move");
-        assert!(near(s.points[1].tangent_in, v(0.0, -8.0)), "a lone out handle is mirrored");
-        assert!(near(s.points[2].tangent_out, v(4.0, -3.0)), "a lone in handle is mirrored");
-        assert_eq!((s.points[3].tangent_in, s.points[3].tangent_out), (V2::ZERO, V2::ZERO), "no handles stays no handles (use Smooth)");
-        assert!(s.points.iter().all(|p| p.smooth));
+        assert!(near(s.points[0].tangent_out, v(10.0, -10.0)) && near(s.points[0].tangent_in, v(-10.0, 10.0)), "{:?}", s.points[0]);
+        assert!(near(s.points[3].tangent_out, v(-10.0, -10.0)) && near(s.points[3].tangent_in, v(10.0, 10.0)), "{:?}", s.points[3]);
+        assert!(s.points[0].smooth && s.points[3].smooth && !s.points[1].smooth);
+        // Cusp then smooth round-trips a point.
+        let mut t = square_shape();
+        t.smooth_points(None);
+        t.cusp_points(Some(&[PointId(1)]));
+        assert!(!t.points[0].smooth && t.points[0].tangent_out == V2::ZERO && t.points[1].smooth);
+        t.smooth_points(Some(&[PointId(1)]));
+        assert!(t.points[0].smooth && t.points[0].tangent_out != V2::ZERO);
     }
 
     #[test]
-    fn smooth_builds_handles_from_the_neighbours() {
+    fn smooth_averages_the_directions_around_each_point() {
         let mut s = square_shape();
         assert_eq!(s.smooth_points(None), 4);
         // Point 0 sits between (0, 60) and (60, 0): handle = (next - prev) / 6.
@@ -1187,6 +1224,34 @@ mod tests {
     }
 
     #[test]
+    fn smooth_flattens_peaks_and_valleys_and_does_not_overshoot() {
+        // A zig-zag: the middle points are peaks and valleys, so their handles are level.
+        let mut s = Shape::new(NodeId(1), "z");
+        s.closed = false;
+        for (i, (x, y)) in [(0.0, 0.0), (30.0, 40.0), (60.0, 0.0), (90.0, 40.0)].into_iter().enumerate() {
+            s.points.push(Point::corner(PointId(i as u64 + 1), x, y));
+        }
+        s.smooth_points(None);
+        for k in [1, 2] {
+            assert_eq!((s.points[k].tangent_out.y, s.points[k].tangent_in.y), (0.0, 0.0), "level at point {k}");
+            assert!(s.points[k].tangent_out.x > 0.0, "still heading forward");
+        }
+        // Handles stay inside each segment's band: no overshoot above 40 or below 0.
+        for w in s.points.windows(2) {
+            let (a, b) = (&w[0], &w[1]);
+            for y in [a.pos.y + a.tangent_out.y, b.pos.y + b.tangent_in.y] {
+                assert!((0.0..=40.0).contains(&y), "{y}");
+            }
+        }
+        // Smoothing a subset leaves the other points' handles alone.
+        let mut t = s.clone();
+        t.cusp_points(None);
+        t.smooth_points(Some(&[PointId(2)]));
+        assert!(t.points[1].smooth && t.points[1].tangent_out != V2::ZERO);
+        assert!(!t.points[2].smooth && t.points[2].tangent_out == V2::ZERO);
+    }
+
+    #[test]
     fn smooth_on_an_open_shape_points_the_end_handles_along_the_only_neighbour() {
         let mut s = square_shape();
         s.closed = false;
@@ -1199,7 +1264,7 @@ mod tests {
     #[test]
     fn point_operations_ignore_what_does_not_exist_and_never_panic() {
         let mut empty = Shape::new(NodeId(1), "e");
-        assert_eq!((empty.cusp_points(None), empty.uncusp_points(None), empty.smooth_points(None)), (0, 0, 0));
+        assert_eq!((empty.cusp_points(None), empty.smooth_points(None)), (0, 0));
         let mut one = Shape::new(NodeId(2), "o");
         one.points.push(Point::corner(PointId(1), 5.0, 5.0));
         assert_eq!(one.smooth_points(None), 1, "the point is marked smooth");

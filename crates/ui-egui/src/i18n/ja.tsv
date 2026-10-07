@@ -303,13 +303,8 @@
 	Roto	ロト
 	Show mask overlay	マスクオーバーレイを表示
 	Cusp	カスプ
-	Uncusp	カスプ解除
 	Cusp Points	ポイントをカスプにする
-	Uncusp Points	ポイントのカスプを解除
 	Smooth Points	ポイントをスムーズにする
-	Cusp points: handles move independently	ポイントをカスプにする: ハンドルが独立して動きます
-	Uncusp points: link the handles in a straight line	カスプ解除: ハンドルを一直線に連結します
-	Smooth points: build handles from the neighbours	スムーズ: 隣接ポイントからハンドルを生成します
 	Select points (or a shape in the Roto panel) first	先にポイント(またはロトパネルでシェイプ)を選択してください
 	All points	すべてのポイント
 	Backend	バックエンド
@@ -2016,3 +2011,7 @@
 	Selection from Roto Mask	ロトマスクから選択範囲を作成
 	Add Roto Shape from Selection	選択範囲からロトシェイプを追加
 	Apply mask while editing	編集中にマスクを適用
+	Cusp points: make them square points (no handles)	カスプ: 角のポイントにします（ハンドルなし）
+	Smooth points: make them bezier points with handles that average their neighbours	スムーズ: 隣接ポイントを平均したハンドルを持つベジェポイントにします
+	To Path	パスに変換
+	Export the node chosen here, or the whole mask, as a standard path (the work path)	選択したノード、またはマスク全体を標準パス（ワークパス）として書き出します

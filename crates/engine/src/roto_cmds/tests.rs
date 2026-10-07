@@ -569,7 +569,7 @@ fn view_roto_edit_is_view_state_with_no_history_and_keeps_a_clean_document_clean
 }
 
 #[test]
-fn cusp_uncusp_and_smooth_commands_edit_the_points_one_undo_step_each() {
+fn cusp_and_smooth_commands_edit_the_points_one_undo_step_each() {
     let mut s = with_roto_layer(100, 100);
     let id = add_rect(&mut s, 20.0, 20.0, 40.0, 40.0);
     let ids = point_ids(&shape(&s, id));
@@ -585,33 +585,20 @@ fn cusp_uncusp_and_smooth_commands_edit_the_points_one_undo_step_each() {
     let rounded = area(&s);
     assert!((rounded - square).abs() > 20.0 && rounded < square * 1.6, "{rounded} vs {square}");
 
-    // Cusp one point: its handles stay, the link is gone; the others are untouched.
-    let handles = sh.points[0].tangent_out;
+    // Cusp one point: it becomes a square point; the others are untouched.
     s.execute("roto.point.cusp", json!({"shape": id, "ids": [ids[0]]})).unwrap();
     let sh = shape(&s, id);
-    assert!(!sh.points[0].smooth && sh.points[1].smooth);
-    assert_eq!(sh.points[0].tangent_out, handles);
-    // The handles are now independent: bend one, the other stays.
-    s.execute("roto.point.set", json!({"shape": id, "id": ids[0], "out": [5, 25]})).unwrap();
-    let sh = shape(&s, id);
-    assert_eq!(sh.points[0].tangent_out, V2::new(5.0, 25.0));
-    assert!(len(sh.points[0].tangent_in) > 1.0 && sh.points[0].tangent_in != V2::new(-5.0, -25.0));
-
-    // Uncusp: linked again, in-handle opposite the out-handle, keeping its length.
-    let in_len = len(sh.points[0].tangent_in);
-    s.execute("roto.point.uncusp", json!({"shape": id, "ids": [ids[0]]})).unwrap();
-    let p = shape(&s, id).points[0];
-    assert!(p.smooth);
-    assert!((len(p.tangent_in) - in_len).abs() < 1e-9);
-    let cross = p.tangent_in.x * p.tangent_out.y - p.tangent_in.y * p.tangent_out.x;
-    assert!(cross.abs() < 1e-6 && p.tangent_in.x * p.tangent_out.x + p.tangent_in.y * p.tangent_out.y < 0.0, "opposite and collinear");
+    assert!(!sh.points[0].smooth && sh.points[0].tangent_out == V2::ZERO && sh.points[0].tangent_in == V2::ZERO);
+    assert!(sh.points[1].smooth && len(sh.points[1].tangent_out) > 1.0);
+    // Smooth the same single point: it is a bezier point again.
+    s.execute("roto.point.smooth", json!({"shape": id, "ids": [ids[0]]})).unwrap();
+    assert!(shape(&s, id).points[0].smooth && len(shape(&s, id).points[0].tangent_out) > 1.0);
 
     // Each command was one undo step.
     undo(&mut s);
-    assert!(!shape(&s, id).points[0].smooth, "undo of uncusp: still cusped");
+    assert!(!shape(&s, id).points[0].smooth, "undo of smooth: still square");
     undo(&mut s);
-    undo(&mut s);
-    assert!(shape(&s, id).points[0].smooth, "undo of cusp (after undoing the handle edit)");
+    assert!(shape(&s, id).points[0].smooth, "undo of cusp");
     undo(&mut s);
     assert!(shape(&s, id).points.iter().all(|p| p.tangent_out == V2::ZERO && !p.smooth), "undo of smooth: the square again");
 }
@@ -622,7 +609,7 @@ fn point_shape_commands_reject_bad_ids_without_touching_anything() {
     let id = add_rect(&mut s, 20.0, 20.0, 40.0, 40.0);
     let before = mask(&s);
     let rev = revision(&s);
-    for cmd in ["roto.point.cusp", "roto.point.uncusp", "roto.point.smooth"] {
+    for cmd in ["roto.point.cusp", "roto.point.smooth"] {
         assert!(s.execute(cmd, json!({"shape": id, "ids": [424242]})).is_err(), "{cmd}: unknown point");
         assert!(s.execute(cmd, json!({"shape": 777})).is_err(), "{cmd}: unknown shape");
         assert!(s.execute(cmd, json!({"shape": id, "ids": "all"})).is_err(), "{cmd}: ids must be a list");
@@ -709,4 +696,35 @@ fn a_selection_becomes_roto_shapes_that_reproduce_it_holes_included() {
     assert!(diff < 100.0, "the shapes follow the selection (diff {diff})");
     undo(&mut s);
     assert!(s.active().unwrap().doc.layer(s.active().unwrap().active_layer.unwrap()).unwrap().roto_mask.is_none(), "undo removes the mask it created");
+}
+
+#[test]
+fn roto_exports_as_a_standard_path_with_transforms_and_ops() {
+    let mut s = with_roto_layer(100, 100);
+    assert!(s.execute("roto.export_path", json!({})).is_err(), "nothing to export");
+    let a = add_rect(&mut s, 10.0, 10.0, 40.0, 40.0);
+    let b = add_rect(&mut s, 20.0, 20.0, 10.0, 10.0);
+    s.execute("roto.node.set", json!({"id": b, "blendOp": "subtract"})).unwrap();
+    let g = s.execute("roto.node.group", json!({"ids": [a, b]})).unwrap()["id"].as_u64().unwrap();
+    s.execute("roto.node.transform", json!({"id": g, "translate": [5, 7]})).unwrap();
+    let r = s.execute("roto.export_path", json!({})).unwrap();
+    assert_eq!(r["subpaths"], 2);
+    let d = s.active().unwrap();
+    let wp = d.doc.work_path.clone().expect("a work path");
+    assert_eq!(wp.subpaths[0].op, photocraft_doc::PathOp::Combine);
+    assert_eq!(wp.subpaths[1].op, photocraft_doc::PathOp::Subtract);
+    assert!(wp.subpaths[0].closed);
+    let first = wp.subpaths[0].knots[0].anchor;
+    assert_eq!((first.x, first.y), (15.0, 17.0), "the group translation is applied");
+    // One node, saved under a name; a second export under that name replaces it.
+    s.execute("roto.export_path", json!({"node": b, "name": "Hole"})).unwrap();
+    s.execute("roto.export_path", json!({"node": a, "name": "Hole"})).unwrap();
+    let d = s.active().unwrap();
+    assert_eq!(d.doc.paths.len(), 1);
+    assert_eq!(d.doc.paths[0].path.subpaths.len(), 1);
+    // Bad node: error, nothing changes.
+    assert!(s.execute("roto.export_path", json!({"node": 999})).is_err());
+    undo(&mut s);
+    undo(&mut s);
+    assert_eq!(s.active().unwrap().doc.paths.len(), 0);
 }

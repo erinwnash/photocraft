@@ -444,9 +444,9 @@ fn a_reduced_matte_scales_blur_and_root_moves_so_it_matches_the_full_size_mask()
 }
 
 // ---------------------------------------------------------------------------------------------
-// Cusp, uncusp and smooth
+// Cusp and smooth
 
-const POINT_COMMANDS: [&str; 3] = ["roto.cuspPoints", "roto.uncuspPoints", "roto.smoothPoints"];
+const POINT_COMMANDS: [&str; 2] = ["roto.cuspPoints", "roto.smoothPoints"];
 
 fn handles_of(a: &PhotocraftApp, shape: usize, point: usize) -> (V2, V2, bool) {
     let p = shapes(a)[shape].points[point];
@@ -475,15 +475,17 @@ fn point_commands_act_on_the_selected_points_through_the_menu() {
     }
     crate::menus::invoke(&mut a, &ctx, "roto.smoothPoints", json!({})).unwrap();
     let (tin, tout, smooth) = handles_of(&a, 0, 0);
-    assert!(smooth && tout != V2::ZERO && tin == V2::new(-tout.x, -tout.y), "{tin:?} {tout:?}");
+    let cross = tin.x * tout.y - tin.y * tout.x;
+    assert!(smooth && tout != V2::ZERO && cross.abs() < 1e-9 && tin.x * tout.x + tin.y * tout.y < 0.0, "linked: opposite and collinear: {tin:?} {tout:?}");
     assert!(handles_of(&a, 0, 1).2);
     assert_eq!(handles_of(&a, 0, 2), (V2::ZERO, V2::ZERO, false), "an unselected point is untouched");
 
-    // Cusp leaves the handles where they are and breaks the link; Uncusp links them again.
+    // Cusp makes the selected points square again (no handles); Smooth makes them bezier points.
     crate::menus::invoke(&mut a, &ctx, "roto.cuspPoints", json!({})).unwrap();
-    assert_eq!(handles_of(&a, 0, 0), (tin, tout, false));
-    crate::menus::invoke(&mut a, &ctx, "roto.uncuspPoints", json!({})).unwrap();
-    assert_eq!(handles_of(&a, 0, 0), (tin, tout, true), "already collinear: linking changes nothing but the flag");
+    assert_eq!(handles_of(&a, 0, 0), (V2::ZERO, V2::ZERO, false));
+    assert_eq!(handles_of(&a, 0, 1), (V2::ZERO, V2::ZERO, false));
+    crate::menus::invoke(&mut a, &ctx, "roto.smoothPoints", json!({})).unwrap();
+    assert_eq!(handles_of(&a, 0, 0), (tin, tout, true), "smoothing depends only on the positions");
 
     // With no points selected, a shape selected in the Roto panel is acted on as a whole.
     a.ui.roto.sel.clear();
@@ -500,7 +502,7 @@ fn point_commands_act_on_the_selected_points_through_the_menu() {
 fn the_point_commands_are_menu_items_users_can_map_keys_to() {
     let a = app();
     let items = crate::menus::menu_items(&a);
-    for (id, label) in [("roto.cuspPoints", "Cusp Points"), ("roto.uncuspPoints", "Uncusp Points"), ("roto.smoothPoints", "Smooth Points")] {
+    for (id, label) in [("roto.cuspPoints", "Cusp Points"), ("roto.smoothPoints", "Smooth Points")] {
         let item = items.iter().find(|i| i.id == id).unwrap_or_else(|| panic!("{id} is a menu item"));
         assert_eq!((item.label.as_str(), item.path.as_slice()), (label, &["Layer".to_string(), "Roto Mask".to_string()][..]));
         assert_eq!(item.shortcut, None, "no default key: the user assigns one");
@@ -553,7 +555,6 @@ fn the_options_bar_has_the_point_buttons_and_the_overlay_checkbox_unticked() {
     }
     assert!(!a.ui.roto.matte_overlay);
     assert_eq!(point_texts("roto.cuspPoints").0, "Cusp");
-    assert_eq!(point_texts("roto.uncuspPoints").0, "Uncusp");
     assert_eq!(point_texts("roto.smoothPoints").0, "Smooth");
 }
 
@@ -704,4 +705,13 @@ fn the_right_click_action_adds_roto_shapes_following_the_selection() {
     let mut b = app();
     selection_to_shapes(&mut b);
     assert!(b.ui.status_error);
+}
+
+#[test]
+fn the_panel_exports_the_roto_as_a_work_path() {
+    let mut a = with_rect();
+    // The panel's To Path button queues this action; running it makes the work path.
+    a.run("roto.export_path", json!({"node": shapes(&a)[0].id.0})).unwrap();
+    let d = a.session.active().unwrap();
+    assert_eq!(d.doc.work_path.as_ref().map(|p| p.subpaths.len()), Some(1));
 }
