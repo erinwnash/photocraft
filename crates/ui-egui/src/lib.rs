@@ -89,6 +89,7 @@ pub mod proxy;
 pub mod puppet_ui;
 pub mod rasterize_prompt;
 pub mod retouch_ui;
+pub mod roto_edit;
 pub mod rulers;
 pub mod shortcut_dispatch;
 pub mod shortcuts;
