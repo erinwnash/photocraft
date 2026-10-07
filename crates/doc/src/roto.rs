@@ -8,6 +8,10 @@ pub const MAX_DEPTH: usize = 32;
 pub const MAX_NODES: usize = 10_000;
 pub const MAX_BLUR: f32 = 1000.0;
 pub const MAX_FEATHER: f64 = 10_000.0;
+/// Largest accepted point, handle, offset, translate or pivot component (document pixels).
+pub const MAX_COORD: f64 = 1.0e7;
+/// Largest accepted scale factor.
+pub const MAX_SCALE: f64 = 1.0e6;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct NodeId(pub u64);
@@ -89,6 +93,33 @@ impl Transform2D {
     pub fn is_finite(&self) -> bool {
         self.translate.is_finite() && self.scale.is_finite() && self.pivot.is_finite() && self.rotate.is_finite() && self.skew.is_finite()
     }
+
+    /// Finite and within the accepted ranges.
+    fn check(&self, what: &str) -> Result<(), RotoError> {
+        if !self.is_finite() {
+            return Err(RotoError::NonFinite(what.into()));
+        }
+        let big = |v: V2, lim: f64| v.x.abs() > lim || v.y.abs() > lim;
+        if big(self.translate, MAX_COORD) || big(self.pivot, MAX_COORD) || big(self.scale, MAX_SCALE) {
+            return Err(RotoError::OutOfRange(format!("{what} transform")));
+        }
+        Ok(())
+    }
+
+    /// Maps a point: scale and skew about the pivot, rotate, then translate.
+    pub fn apply(&self, p: V2) -> V2 {
+        let (dx, dy) = (p.x - self.pivot.x, p.y - self.pivot.y);
+        let (sx, sy) = (dx * self.scale.x, dy * self.scale.y);
+        let skew = self.skew.to_radians().tan();
+        let (kx, ky) = (sx + sy * skew, sy);
+        let (sin, cos) = self.rotate.to_radians().sin_cos();
+        V2::new(self.pivot.x + self.translate.x + kx * cos - ky * sin, self.pivot.y + self.translate.y + kx * sin + ky * cos)
+    }
+
+    /// Maps a vector (a handle or an offset): the linear part only, without pivot or translate.
+    pub fn apply_vec(&self, v: V2) -> V2 {
+        Transform2D { translate: V2::ZERO, pivot: V2::ZERO, ..*self }.apply(v)
+    }
 }
 
 /// A bezier point. Handles and the feather offset are relative to `pos`.
@@ -100,6 +131,8 @@ pub struct Point {
     pub tangent_out: V2,
     /// Offset of the feather outline from `pos` (zero = no feather at this point).
     pub feather_pos: V2,
+    /// Feather-outline tangents, relative to the shape's own `tangent_in`/`tangent_out` (zero keeps
+    /// the feather outline parallel in curvature to the shape).
     pub feather_in: V2,
     pub feather_out: V2,
     pub smooth: bool,
@@ -117,8 +150,14 @@ impl Point {
             smooth: false,
         }
     }
+    fn vectors(&self) -> [V2; 6] {
+        [self.pos, self.tangent_in, self.tangent_out, self.feather_pos, self.feather_in, self.feather_out]
+    }
     fn is_finite(&self) -> bool {
-        [self.pos, self.tangent_in, self.tangent_out, self.feather_pos, self.feather_in, self.feather_out].iter().all(V2::is_finite)
+        self.vectors().iter().all(V2::is_finite)
+    }
+    fn in_range(&self) -> bool {
+        self.vectors().iter().all(|v| v.x.abs() <= MAX_COORD && v.y.abs() <= MAX_COORD)
     }
 }
 
@@ -253,9 +292,7 @@ fn validate_group(g: &Group, depth: usize, count: &mut usize) -> Result<(), Roto
         return Err(RotoError::TooDeep);
     }
     unit(g.opacity, &g.name)?;
-    if !g.transform.is_finite() {
-        return Err(RotoError::NonFinite(g.name.clone()));
-    }
+    g.transform.check(&g.name)?;
     for n in &g.children {
         *count += 1;
         if *count > MAX_NODES {
@@ -271,8 +308,12 @@ fn validate_group(g: &Group, depth: usize, count: &mut usize) -> Result<(), Roto
                 if !s.blur.is_finite() || !(0.0..=MAX_BLUR).contains(&s.blur) {
                     return Err(RotoError::OutOfRange(format!("{} blur", s.name)));
                 }
-                if !s.transform.is_finite() || !s.points.iter().all(Point::is_finite) {
+                s.transform.check(&s.name)?;
+                if !s.points.iter().all(Point::is_finite) {
                     return Err(RotoError::NonFinite(s.name.clone()));
+                }
+                if !s.points.iter().all(Point::in_range) {
+                    return Err(RotoError::OutOfRange(format!("{} point", s.name)));
                 }
             }
         }
@@ -698,5 +739,33 @@ mod tests {
         points.dedup();
         assert_eq!((nodes.len(), points.len()), (n, p));
         assert_eq!(n, 7);
+    }
+
+    #[test]
+    fn rejects_absurd_coordinates_and_scales() {
+        let mut m = RotoMask::default();
+        let mut s = shape_with(1, 3);
+        s.points[0].pos.x = 1.0e9;
+        m.root.children.push(Node::Shape(s));
+        assert!(matches!(m.validate(), Err(RotoError::OutOfRange(_))));
+        let mut m = RotoMask::default();
+        m.root.transform.translate.y = -1.0e9;
+        assert!(matches!(m.validate(), Err(RotoError::OutOfRange(_))));
+        let mut m = RotoMask::default();
+        let mut s = shape_with(1, 3);
+        s.transform.scale = V2::new(1.0e9, 1.0);
+        m.root.children.push(Node::Shape(s));
+        assert!(matches!(m.validate(), Err(RotoError::OutOfRange(_))));
+    }
+
+    #[test]
+    fn transform_applies_about_the_pivot_and_vectors_ignore_translation() {
+        let t = Transform2D { translate: V2::new(5.0, 0.0), rotate: 90.0, pivot: V2::new(10.0, 10.0), ..Default::default() };
+        let p = t.apply(V2::new(20.0, 10.0));
+        // Rotating (+10, 0) by 90 degrees about the pivot gives (0, +10), then the translate.
+        assert!((p.x - 15.0).abs() < 1e-9 && (p.y - 20.0).abs() < 1e-9, "{p:?}");
+        let v = t.apply_vec(V2::new(10.0, 0.0));
+        assert!(v.x.abs() < 1e-9 && (v.y - 10.0).abs() < 1e-9, "{v:?}");
+        assert_eq!(Transform2D::default().apply(V2::new(3.0, 4.0)), V2::new(3.0, 4.0));
     }
 }

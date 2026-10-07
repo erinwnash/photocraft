@@ -22,7 +22,8 @@ pub fn roto_values(m: &RotoMask, rect: Rect) -> Vec<f32> {
         return vec![0.0; n];
     }
     let mut acc = vec![0.0f32; n];
-    let mut xf: Vec<Transform2D> = Vec::new();
+    // The root group's transform is the outermost one (it moves a linked mask with its layer).
+    let mut xf: Vec<Transform2D> = vec![m.root.transform];
     eval_children(&m.root, rect, m.overlap, &mut xf, &mut acc);
     for v in &mut acc {
         let x = v.clamp(0.0, 1.0) * m.density;

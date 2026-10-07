@@ -2,25 +2,19 @@ use photocraft_doc::roto::{MAX_FEATHER, Point as RotoPoint, Shape, Transform2D, 
 use photocraft_doc::{Knot, Path, Subpath};
 use photocraft_geom::Point;
 
-/// Applies translate/rotate/scale/skew about the pivot.
-pub(crate) fn transform_point(t: &Transform2D, p: V2) -> V2 {
-    let (dx, dy) = (p.x - t.pivot.x, p.y - t.pivot.y);
-    let (sx, sy) = (dx * t.scale.x, dy * t.scale.y);
-    let skew = t.skew.to_radians().tan();
-    let (kx, ky) = (sx + sy * skew, sy);
-    let (sin, cos) = t.rotate.to_radians().sin_cos();
-    V2::new(t.pivot.x + t.translate.x + kx * cos - ky * sin, t.pivot.y + t.translate.y + kx * sin + ky * cos)
-}
-
 fn apply(chain: &[Transform2D], p: V2) -> Point {
-    let q = chain.iter().fold(p, |acc, t| transform_point(t, acc));
+    let q = chain.iter().fold(p, |acc, t| t.apply(acc));
     Point::new(q.x, q.y)
 }
 
 fn knot(p: &RotoPoint, chain: &[Transform2D], feather: bool) -> Knot {
     let (base, tin, tout) = if feather {
         let off = V2::new(p.feather_pos.x.clamp(-MAX_FEATHER, MAX_FEATHER), p.feather_pos.y.clamp(-MAX_FEATHER, MAX_FEATHER));
-        (V2::new(p.pos.x + off.x, p.pos.y + off.y), p.feather_in, p.feather_out)
+        (
+            V2::new(p.pos.x + off.x, p.pos.y + off.y),
+            V2::new(p.tangent_in.x + p.feather_in.x, p.tangent_in.y + p.feather_in.y),
+            V2::new(p.tangent_out.x + p.feather_out.x, p.tangent_out.y + p.feather_out.y),
+        )
     } else {
         (p.pos, p.tangent_in, p.tangent_out)
     };

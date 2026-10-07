@@ -230,3 +230,42 @@ fn full_frame_with_maximum_feather_and_blur_finishes() {
     assert!(v.iter().all(|x| x.is_finite() && (0.0..=1.0).contains(x)));
     assert!(started.elapsed().as_secs() < 20, "took {:?}", started.elapsed());
 }
+
+#[test]
+fn root_group_transform_applies() {
+    let mut m = mask_with(vec![square(1, 0.0, 0.0, 10.0, 10.0)]);
+    m.root.transform.translate = V2::new(20.0, 0.0);
+    let v = roto_values(&m, Rect::new(0, 0, 40, 40));
+    assert!((at(&v, 40, 25, 5) - 1.0).abs() < 1e-6);
+    assert!(at(&v, 40, 5, 5).abs() < 1e-6);
+}
+
+/// A circle from four smooth points with a uniform outward feather. Feather tangents are stored
+/// relative to the shape's, so scaling them by `d / r` makes the feather outline a true offset
+/// circle: the soft edge is then the same width at every angle, not just at the points. (Left at
+/// zero the handles stay circle-sized and the outline pinches between points, as in Nuke.)
+#[test]
+fn feather_tangents_are_relative_and_a_scaled_feather_is_an_even_offset() {
+    let (cx, cy, r, d, k) = (50.0, 50.0, 30.0, 10.0, 30.0 * 0.552_284_749_8);
+    let mut s = Shape::new(NodeId(1), "circle");
+    let dirs = [(0.0, -1.0), (1.0, 0.0), (0.0, 1.0), (-1.0, 0.0)];
+    for (i, (dx, dy)) in dirs.into_iter().enumerate() {
+        let mut p = Point::corner(PointId(i as u64 + 1), cx + dx * r, cy + dy * r);
+        // Clockwise tangents (y down): out is the quarter-turn direction.
+        p.tangent_out = V2::new(-dy * k, dx * k);
+        p.tangent_in = V2::new(dy * k, -dx * k);
+        p.feather_pos = V2::new(dx * d, dy * d);
+        p.feather_out = V2::new(p.tangent_out.x * d / r, p.tangent_out.y * d / r);
+        p.feather_in = V2::new(p.tangent_in.x * d / r, p.tangent_in.y * d / r);
+        p.smooth = true;
+        s.points.push(p);
+    }
+    let v = roto_values(&mask_with(vec![s]), Rect::new(0, 0, 100, 100));
+    // Halfway through the band (5px outside the circle) the ramp should read about 0.5 at any angle.
+    for deg in [0.0f64, 20.0, 45.0, 70.0, 135.0, 200.0, 300.0] {
+        let (sn, cs) = deg.to_radians().sin_cos();
+        let (x, y) = (cx + cs * (r + 5.0), cy + sn * (r + 5.0));
+        let a = at(&v, 100, x.floor() as usize, y.floor() as usize);
+        assert!((a - 0.5).abs() < 0.1, "angle {deg}: {a}");
+    }
+}
