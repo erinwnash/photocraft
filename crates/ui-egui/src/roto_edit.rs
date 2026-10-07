@@ -141,6 +141,10 @@ pub struct ShapeView {
     pub visible: bool,
     pub affine: Affine,
     pub points: Vec<PointView>,
+    /// The shape's editor colours (sRGB); `None` is the default.
+    pub point_color: Option<[u8; 3]>,
+    pub spline_color: Option<[u8; 3]>,
+    pub feather_color: Option<[u8; 3]>,
 }
 
 fn apply_chain(chain: &[Transform2D], p: V2) -> V2 {
@@ -201,7 +205,17 @@ fn view_of(shape: &Shape, enclosing: &[Transform2D]) -> ShapeView {
             }
         })
         .collect();
-    ShapeView { id: shape.id, closed: shape.closed, locked: shape.locked, visible: shape.visible, affine: a, points }
+    ShapeView {
+        id: shape.id,
+        closed: shape.closed,
+        locked: shape.locked,
+        visible: shape.visible,
+        affine: a,
+        points,
+        point_color: shape.point_color,
+        spline_color: shape.spline_color,
+        feather_color: shape.feather_color,
+    }
 }
 
 fn collect_views(g: &Group, enclosing: &mut Vec<Transform2D>, out: &mut Vec<ShapeView>) {

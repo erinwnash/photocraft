@@ -232,6 +232,7 @@ fn node_json(n: &Node) -> Value {
         Node::Shape(s) => json!({
             "kind": "shape", "id": s.id.0, "name": s.name, "visible": s.visible, "locked": s.locked, "opacity": s.opacity,
             "blendOp": blend_name(s.blend_op), "invert": s.invert, "closed": s.closed, "blur": s.blur,
+            "pointColor": s.point_color, "splineColor": s.spline_color, "featherColor": s.feather_color,
             "falloff": falloff_name(s.falloff), "transform": transform_json(&s.transform),
             "points": s.points.iter().map(point_json).collect::<Vec<_>>(),
         }),
@@ -646,6 +647,22 @@ fn node_duplicate(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
+/// An optional colour param: absent leaves it alone, `null` resets it, `[r, g, b]` (0-255) sets it.
+fn opt_color(cmd: &str, p: &Value, key: &str) -> Result<Option<Option<[u8; 3]>>> {
+    match p.get(key) {
+        None => Ok(None),
+        Some(Value::Null) => Ok(Some(None)),
+        Some(Value::Array(a)) if a.len() == 3 => {
+            let mut c = [0u8; 3];
+            for (o, v) in c.iter_mut().zip(a) {
+                *o = v.as_u64().filter(|n| *n <= 255).ok_or_else(|| bad(cmd, format!("`{key}` must be [r, g, b] with 0-255 values, or null")))? as u8;
+            }
+            Ok(Some(Some(c)))
+        }
+        Some(_) => Err(bad(cmd, format!("`{key}` must be [r, g, b] with 0-255 values, or null"))),
+    }
+}
+
 fn node_set(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "roto.node.set";
     let id = node_id(CMD, p, "id")?;
@@ -658,6 +675,7 @@ fn node_set(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let invert = opt_bool(CMD, p, "invert")?;
     let closed = opt_bool(CMD, p, "closed")?;
+    let (point_color, spline_color, feather_color) = (opt_color(CMD, p, "pointColor")?, opt_color(CMD, p, "splineColor")?, opt_color(CMD, p, "featherColor")?);
     let blur = match opt_f64(CMD, p, "blur")? {
         None => None,
         Some(b) if (0.0..=f64::from(MAX_BLUR)).contains(&b) => Some(b as f32),
@@ -676,6 +694,9 @@ fn node_set(s: &mut Session, p: &Value) -> Result<Value> {
                 sh.blend_op = blend.unwrap_or(sh.blend_op);
                 sh.invert = invert.unwrap_or(sh.invert);
                 sh.closed = closed.unwrap_or(sh.closed);
+                sh.point_color = point_color.unwrap_or(sh.point_color);
+                sh.spline_color = spline_color.unwrap_or(sh.spline_color);
+                sh.feather_color = feather_color.unwrap_or(sh.feather_color);
                 sh.blur = blur.unwrap_or(sh.blur);
                 sh.falloff = fall.unwrap_or(sh.falloff);
             }
@@ -1494,7 +1515,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "roto.node.set",
             "Roto Node Settings",
             [],
-            r##"{"layer":id?,"id":nodeId,"visible":bool?,"locked":bool?,"opacity":0..1?,"blendOp":"union|subtract|intersect|max|min|multiply|difference"?,"invert":bool? (shapes),"closed":bool? (shapes: join or open the last and first points),"blur":px? (shapes),"falloff":"linear|smooth|easeIn|easeOut"? (shapes)}"##,
+            r##"{"layer":id?,"id":nodeId,"visible":bool?,"locked":bool?,"opacity":0..1?,"blendOp":"union|subtract|intersect|max|min|multiply|difference"?,"invert":bool? (shapes),"closed":bool? (shapes: join or open the last and first points),"pointColor|splineColor|featherColor":[r,g,b]|null? (shapes: editor colours, 0-255; null = default, the feather default is the point colour at 80% value),"blur":px? (shapes),"falloff":"linear|smooth|easeIn|easeOut"? (shapes)}"##,
             has_roto,
             node_set
         ),

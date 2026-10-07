@@ -713,7 +713,21 @@ pub fn keys(app: &mut PhotocraftApp, ctx: &egui::Context) -> bool {
 
 const OUTLINE: Color32 = Color32::from_rgb(0, 200, 255);
 const SELECTED: Color32 = Color32::from_rgb(255, 176, 0);
-const FEATHER: Color32 = Color32::from_rgba_premultiplied(200, 200, 200, 200);
+/// A colour scaled to `k` of its value (same hue and saturation).
+fn darken(c: Color32, k: f32) -> Color32 {
+    let f = |v: u8| (f32::from(v) * k).round().clamp(0.0, 255.0) as u8;
+    Color32::from_rgb(f(c.r()), f(c.g()), f(c.b()))
+}
+
+/// The colours a shape is drawn with: its points and bezier handles, its outline, and its feather
+/// points (by default the point colour at 80% of its value).
+fn shape_colors(v: &edit::ShapeView, selected_shape: bool) -> (Color32, Color32, Color32) {
+    let rgb = |c: [u8; 3]| Color32::from_rgb(c[0], c[1], c[2]);
+    let point = v.point_color.map_or(SELECTED, rgb);
+    let spline = v.spline_color.map_or(if selected_shape { SELECTED } else { OUTLINE }, rgb);
+    let feather = v.feather_color.map_or_else(|| darken(point, 0.8), rgb);
+    (point, spline, feather)
+}
 
 /// Shapes, points, handles and the gesture in progress, over the canvas.
 pub fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform) {
@@ -734,12 +748,13 @@ pub fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform
     let sel = &app.ui.roto.sel;
     for v in edit::shape_views(m) {
         let selected_shape = sel.shape == Some(v.id);
+        let (point_col, spline_col, feather_col) = shape_colors(&v, selected_shape);
         let (col, w) = if !v.visible || v.locked {
             (Color32::GRAY, 1.0)
         } else if selected_shape {
-            (SELECTED, 1.5)
+            (spline_col, 1.5)
         } else {
-            (OUTLINE, 1.0)
+            (spline_col, 1.0)
         };
         let line: Vec<Pos2> = edit::outline_samples(&v, 16).into_iter().map(|(_, q)| to_screen(xf, q)).collect();
         if line.len() >= 2 {
@@ -752,7 +767,7 @@ pub fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform
             {
                 f.push(first);
             }
-            painter.add(egui::Shape::dashed_line(&f, Stroke::new(1.0, FEATHER), 4.0, 3.0));
+            painter.add(egui::Shape::dashed_line(&f, Stroke::new(1.0, feather_col), 4.0, 3.0));
         }
         for p in &v.points {
             let c = to_screen(xf, p.pos);
@@ -760,15 +775,15 @@ pub fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform
             if on {
                 for (tip, is_feather) in [(p.tangent_in, false), (p.tangent_out, false)].into_iter().chain(p.feather.map(|f| (f, true))) {
                     let t = to_screen(xf, tip);
-                    painter.line_segment([c, t], Stroke::new(1.0, if is_feather { FEATHER } else { SELECTED }));
+                    painter.line_segment([c, t], Stroke::new(1.0, if is_feather { feather_col } else { point_col }));
                     if is_feather {
                         painter.add(egui::Shape::convex_polygon(
                             vec![t + vec2(0.0, -4.0), t + vec2(4.0, 0.0), t + vec2(0.0, 4.0), t + vec2(-4.0, 0.0)],
                             Color32::WHITE,
-                            Stroke::new(1.0, FEATHER),
+                            Stroke::new(1.5, feather_col),
                         ));
                     } else if tip != p.pos {
-                        painter.circle_filled(t, 3.0, SELECTED);
+                        painter.circle_filled(t, 3.0, point_col);
                     }
                 }
                 // The feather point's own bezier handles, from the feather point.
@@ -777,18 +792,19 @@ pub fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform
                     for tip in [p.feather_in, p.feather_out] {
                         if tip != f {
                             let t = to_screen(xf, tip);
-                            painter.line_segment([fc, t], Stroke::new(1.0, FEATHER));
-                            painter.circle_filled(t, 2.5, FEATHER);
+                            painter.line_segment([fc, t], Stroke::new(1.5, feather_col));
+                            painter.circle_filled(t, 3.5, feather_col);
+                            painter.circle_stroke(t, 3.5, Stroke::new(1.0, Color32::WHITE));
                         }
                     }
                 }
             } else if let Some(f) = p.feather {
                 let t = to_screen(xf, f);
-                painter.circle_stroke(t, 2.5, Stroke::new(1.0, FEATHER));
+                painter.circle_stroke(t, 3.0, Stroke::new(1.5, feather_col));
             }
             let r = Rect::from_center_size(c, vec2(6.0, 6.0));
-            painter.rect_filled(r, 0.0, if on { SELECTED } else { Color32::WHITE });
-            painter.rect_stroke(r, 0.0, Stroke::new(1.0, if selected_shape { SELECTED } else { OUTLINE }), egui::StrokeKind::Inside);
+            painter.rect_filled(r, 0.0, if on { point_col } else { Color32::WHITE });
+            painter.rect_stroke(r, 0.0, Stroke::new(1.0, spline_col), egui::StrokeKind::Inside);
         }
     }
     let accent = Tokens::get(painter.ctx()).accent;
@@ -1100,6 +1116,39 @@ pub fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 .to_string();
                 if crate::widgets::dropdown(ui, "roto-falloff", &mut f, &fall_opts, 84.0) {
                     acts.push(("roto.node.set", json!({"id": s.id.0, "falloff": f})));
+                }
+            });
+        }
+        // The selected shape's editor colours: points (and bezier handles), spline, feather points.
+        if let Some(s) = selected_shape {
+            let (point, spline, feather) = shape_colors(
+                &edit::ShapeView {
+                    id: s.id,
+                    closed: s.closed,
+                    locked: s.locked,
+                    visible: s.visible,
+                    affine: Default::default(),
+                    points: Vec::new(),
+                    point_color: s.point_color,
+                    spline_color: s.spline_color,
+                    feather_color: s.feather_color,
+                },
+                true,
+            );
+            ui.horizontal_wrapped(|ui| {
+                for (key, label, shown, set) in [
+                    ("pointColor", tl!("Points"), point, s.point_color.is_some()),
+                    ("splineColor", tl!("Spline"), spline, s.spline_color.is_some()),
+                    ("featherColor", tl!("Feather points"), feather, s.feather_color.is_some()),
+                ] {
+                    lbl(ui, label);
+                    let mut rgb = [shown.r(), shown.g(), shown.b()];
+                    if ui.color_edit_button_srgb(&mut rgb).changed() {
+                        acts.push(("roto.node.set", json!({"id": s.id.0, key: rgb, "coalesce": format!("roto-color-{}-{key}", s.id.0)})));
+                    }
+                    if set && crate::widgets::secondary_button(ui, "↺", 24.0).on_hover_text(tl!("Back to the default colour")).clicked() {
+                        acts.push(("roto.node.set", json!({"id": s.id.0, key: Value::Null})));
+                    }
                 }
             });
         }

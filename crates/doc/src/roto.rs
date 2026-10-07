@@ -177,6 +177,15 @@ pub struct Shape {
     pub blur: f32,
     pub falloff: Falloff,
     pub transform: Transform2D,
+    /// Editor colours (sRGB), for the shape's points and bezier handles, its outline, and its
+    /// feather points. `None` uses the default look; the feather colour then follows the point
+    /// colour at 80% of its value. They do not affect the mask.
+    #[serde(default)]
+    pub point_color: Option<[u8; 3]>,
+    #[serde(default)]
+    pub spline_color: Option<[u8; 3]>,
+    #[serde(default)]
+    pub feather_color: Option<[u8; 3]>,
 }
 impl Shape {
     pub fn new(id: NodeId, name: &str) -> Self {
@@ -193,6 +202,9 @@ impl Shape {
             blur: 0.0,
             falloff: Falloff::Linear,
             transform: Transform2D::default(),
+            point_color: None,
+            spline_color: None,
+            feather_color: None,
         }
     }
 }
@@ -675,7 +687,23 @@ impl Fnv {
     fn node(&mut self, n: &Node) {
         match n {
             Node::Shape(s) => {
-                let Shape { id: _, name: _, visible, locked: _, opacity, blend_op, invert, closed, points, blur, falloff, transform } = s;
+                let Shape {
+                    id: _,
+                    name: _,
+                    visible,
+                    locked: _,
+                    opacity,
+                    blend_op,
+                    invert,
+                    closed,
+                    points,
+                    blur,
+                    falloff,
+                    transform,
+                    point_color: _,
+                    spline_color: _,
+                    feather_color: _,
+                } = s;
                 self.put(b"S");
                 self.b(*visible);
                 self.f(f64::from(*opacity));

@@ -763,3 +763,29 @@ fn feather_handles_follow_the_point_until_edited_and_cusp_and_smooth_reset_them(
     assert_eq!((c.tangent_in, c.tangent_out, c.feather_in, c.feather_out), (V2::ZERO, V2::ZERO, V2::ZERO, V2::ZERO));
     assert_eq!(c.feather_pos, V2::new(-10.0, -10.0));
 }
+
+#[test]
+fn shape_colours_are_set_reset_and_validated() {
+    let mut s = with_roto_layer(100, 100);
+    let id = add_rect(&mut s, 10.0, 10.0, 30.0, 30.0);
+    assert_eq!((shape(&s, id).point_color, shape(&s, id).spline_color, shape(&s, id).feather_color), (None, None, None));
+    s.execute("roto.node.set", json!({"id": id, "pointColor": [255, 0, 128], "splineColor": [1, 2, 3]})).unwrap();
+    let sh = shape(&s, id);
+    assert_eq!((sh.point_color, sh.spline_color, sh.feather_color), (Some([255, 0, 128]), Some([1, 2, 3]), None));
+    // Other settings leave colours alone; null resets just that one.
+    s.execute("roto.node.set", json!({"id": id, "blur": 2, "splineColor": null})).unwrap();
+    let sh = shape(&s, id);
+    assert_eq!((sh.point_color, sh.spline_color), (Some([255, 0, 128]), None));
+    for bad in [json!({"pointColor": [256, 0, 0]}), json!({"pointColor": [1, 2]}), json!({"featherColor": "red"}), json!({"splineColor": [-1, 0, 0]})] {
+        let mut p = bad.clone();
+        p["id"] = json!(id);
+        assert!(s.execute("roto.node.set", p).is_err(), "{bad}");
+    }
+    assert_eq!(shape(&s, id).point_color, Some([255, 0, 128]));
+    // They survive a duplicate and the info output.
+    let info = s.execute("layer.roto.info", json!({})).unwrap().to_string();
+    assert!(info.contains("pointColor"), "{info}");
+    undo(&mut s);
+    undo(&mut s);
+    assert_eq!(shape(&s, id).point_color, None);
+}

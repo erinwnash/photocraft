@@ -737,3 +737,49 @@ fn dragging_a_feather_handle_edits_the_feather_bezier_alone_and_smooth_resets_it
     let r = shapes(&a)[0].points[0];
     assert_eq!((r.feather_in, r.feather_out), (V2::ZERO, V2::ZERO));
 }
+
+/// The circles (centre, fill) of one frame of the overlay.
+fn overlay_dots(a: &PhotocraftApp) -> Vec<(egui::Pos2, Color32)> {
+    let ctx = egui::Context::default();
+    PhotocraftApp::setup_context(&ctx, Default::default());
+    let mut dots = Vec::new();
+    for _ in 0..2 {
+        dots.clear();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let xf = ViewXform { rect: ui.max_rect(), zoom: 1.0, center: [150.0, 150.0], flip: false };
+            draw_overlay(a, ui.painter(), &xf);
+        });
+        out.textures_delta.clear();
+        for cs in &out.shapes {
+            if let egui::epaint::Shape::Circle(c) = &cs.shape
+                && c.fill != Color32::TRANSPARENT
+            {
+                dots.push((c.center, c.fill));
+            }
+        }
+    }
+    dots
+}
+
+#[test]
+fn the_feather_bezier_handles_are_drawn_in_the_feather_colour() {
+    let mut a = with_rect();
+    let sh = shapes(&a)[0].id;
+    let p0 = shapes(&a)[0].points[0].id;
+    a.run("roto.point.smooth", json!({"shape": sh.0})).unwrap();
+    a.run("roto.feather.set_point", json!({"shape": sh.0, "id": p0.0, "offset": [-12, -12]})).unwrap();
+    click(&mut a, [20.0, 20.0], Modifiers::NONE);
+    // Default feather colour: the point colour (orange) at 80% of its value.
+    let want = darken(SELECTED, 0.8);
+    assert_eq!(want, Color32::from_rgb(204, 141, 0));
+    let dots = overlay_dots(&a);
+    assert!(dots.iter().filter(|(_, c)| *c == want).count() >= 2, "both feather handle tips are drawn: {dots:?}");
+    // A custom feather colour is used instead; the points colour changes the handles of the point.
+    a.run("roto.node.set", json!({"id": sh.0, "featherColor": [10, 200, 30], "pointColor": [255, 0, 255]})).unwrap();
+    let dots = overlay_dots(&a);
+    assert!(dots.iter().filter(|(_, c)| *c == Color32::from_rgb(10, 200, 30)).count() >= 2);
+    assert!(dots.iter().any(|(_, c)| *c == Color32::from_rgb(255, 0, 255)), "the point's own handle uses the point colour");
+    // Resetting the feather colour goes back to 80% of the (now magenta) point colour.
+    a.run("roto.node.set", json!({"id": sh.0, "featherColor": null})).unwrap();
+    assert!(overlay_dots(&a).iter().any(|(_, c)| *c == Color32::from_rgb(204, 0, 204)));
+}
