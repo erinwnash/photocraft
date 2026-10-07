@@ -1480,6 +1480,7 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
         crate::distort_ui::draw_overlay(app, &painter, &xf);
         crate::retouch_ui::draw_source_marker(app, &painter, &xf);
         crate::vector_ui::draw_overlay(app, &painter, &xf, &doc);
+        crate::roto_ui::draw_overlay(app, &painter, &xf);
         crate::analysis_ui::draw_overlay(app, &painter, &xf);
         crate::gradient_ui::draw_overlay(app, &painter, &xf);
         crate::slice_ui::draw_overlay(app, &painter, &xf);
@@ -1927,6 +1928,10 @@ pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers)
                     crate::vector_ui::pen_down(app, x, y);
                     return;
                 }
+                Tool::Roto => {
+                    crate::roto_ui::down(app, x, y, mods);
+                    return;
+                }
                 Tool::CloneStamp | Tool::Healing if mods.alt => {
                     crate::retouch_ui::set_source(app, x, y);
                     return;
@@ -1986,6 +1991,9 @@ pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers)
             if tool == Tool::Pen {
                 crate::vector_ui::pen_move(app, x, y);
             }
+            if tool == Tool::Roto {
+                crate::roto_ui::moved(app, x, y);
+            }
             let zoom = app.current_zoom();
             if let Some(d) = app.drag.as_mut().filter(|d| d.reposition) {
                 d.track(mods);
@@ -2010,6 +2018,9 @@ pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers)
             }
             if tool == Tool::Pen {
                 crate::vector_ui::pen_up(app);
+            }
+            if tool == Tool::Roto {
+                crate::roto_ui::up(app, x, y);
             }
             let zoom = app.current_zoom();
             let Some(mut d) = app.drag.take() else { return };

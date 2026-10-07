@@ -80,6 +80,7 @@ pub fn tool_icon(t: Tool) -> &'static str {
         Tool::ObjectSelection => "square-dashed-mouse-pointer",
         Tool::Pen => "pen-tool",
         Tool::PathSelection => "mouse-pointer-2",
+        Tool::Roto => "spline",
         Tool::Rectangle => "rectangle-horizontal",
         Tool::EllipseShape => "circle",
         Tool::Triangle => "triangle",

@@ -37,6 +37,7 @@ const TOOL_SECTIONS: &[&[&[Tool]]] = &[
         &[Tool::Pen],
         &[Tool::Type],
         &[Tool::PathSelection],
+        &[Tool::Roto],
         &[Tool::Rectangle, Tool::EllipseShape, Tool::Triangle, Tool::Polygon, Tool::Line, Tool::CustomShape],
     ],
     &[&[Tool::Hand], &[Tool::Zoom]],
@@ -435,6 +436,7 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 if crate::eraser_ui::options_bar(app, ui, tool)
                     || crate::retouch_ui::options_bar(app, ui, tool)
                     || crate::vector_ui::options_bar(app, ui, tool)
+                    || crate::roto_ui::options_bar(app, ui, tool)
                     || crate::analysis_ui::options_bar(app, ui, tool)
                     || crate::slice_ui::options_bar(app, ui, tool)
                 {
@@ -987,7 +989,8 @@ fn dock_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, group: crate::dock::Gro
         (Group::History, _) => crate::comps_ui::panel(app, ui),
         (Group::Layers, 0) => layers(app, ui),
         (Group::Layers, 1) => channels(app, ui),
-        (Group::Layers, _) => crate::vector_ui::paths_panel(app, ui),
+        (Group::Layers, 2) => crate::vector_ui::paths_panel(app, ui),
+        (Group::Layers, _) => crate::roto_ui::panel(app, ui),
     }
 }
 

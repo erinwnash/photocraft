@@ -207,6 +207,7 @@ fn panel_tab(app: &PhotocraftApp, id: &str) -> Option<(&'static str, usize)> {
         "window.panel.history" => ("history", 0),
         "window.panel.channels" => ("layers", 1),
         "window.panel.paths" => ("layers", 2),
+        "window.panel.roto" => ("layers", 3),
         "window.panel.layers" => ("layers", 0),
         "window.panel.adjustments" => ("properties", 1),
         "window.panel.properties" => ("properties", 0),
@@ -286,6 +287,7 @@ pub fn handles(id: &str) -> bool {
             | "window.panel.actions"
             | "window.panel.channels"
             | "window.panel.paths"
+            | "window.panel.roto"
             | "window.panel.character"
             | "window.panel.paragraph"
             | "window.panel.info"

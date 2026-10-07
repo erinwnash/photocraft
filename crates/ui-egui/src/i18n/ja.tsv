@@ -296,6 +296,43 @@
 	Link Vector Mask	ベクトルマスクをリンク
 	Add Vector Mask	ベクトルマスクを追加
 	Vector Mask from Current Path	現在のパスからベクトルマスク
+	Roto Mask	ロトマスク
+	Add Roto Mask	ロトマスクを追加
+	Delete Roto Mask	ロトマスクを削除
+	Rasterize Roto Mask	ロトマスクをラスタライズ
+	Roto	ロト
+	All points	すべてのポイント
+	Backend	バックエンド
+	Bezier	ベジェ
+	Click to add points, drag for smooth handles · click the first point to close · ↩ finish	クリックでポイントを追加、ドラッグでスムーズなハンドル · 最初のポイントをクリックして閉じる · ↩ で完了
+	Copy as Nuke nodes	Nuke ノードとしてコピー
+	Drag a stroke; it is fitted to bezier points	ドラッグでストロークを描くと、ベジェポイントにフィットされます
+	Drag points and handles · ⌘-drag a point to feather · ⌘⌥-click the outline to add a point · Delete removes	ポイントとハンドルをドラッグ · ⌘ドラッグでぼかしを引き出す · ⌘⌥クリックでアウトラインにポイントを追加 · Delete で削除
+	Drag to draw the shape	ドラッグでシェイプを描く
+	Draw a shape with the Roto tool, or import one from Nuke.	ロトツールでシェイプを描くか、Nuke からインポートします。
+	Duplicate	複製
+	Ease in	イーズイン
+	Ease out	イーズアウト
+	Ellipse	楕円形
+	Falloff	フォールオフ
+	Freehand	フリーハンド
+	Import (append)	インポート(追加)
+	Import (replace)	インポート(置き換え)
+	Intersect	交差
+	Linked	リンク
+	Max	最大
+	Min	最小
+	Over	オーバー
+	Overlap	重なり
+	Paste a copied Nuke Roto node here	コピーした Nuke の Roto ノードをここに貼り付け
+	Rasterize to layer mask	レイヤーマスクにラスタライズ
+	Rectangle	長方形
+	Show feather	ぼかしを表示
+	Sum	合計
+	The active layer has no roto mask.	アクティブなレイヤーにロトマスクがありません。
+	Ungroup	グループ解除
+	Union	結合
+	shape(s) copied for Nuke	個のシェイプを Nuke 用にコピーしました
 	Create Clipping Mask	クリッピングマスクを作成
 	Release Clipping Mask	クリッピングマスクを解除
 	Smart Objects	スマートオブジェクト

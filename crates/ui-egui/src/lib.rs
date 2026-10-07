@@ -90,6 +90,7 @@ pub mod puppet_ui;
 pub mod rasterize_prompt;
 pub mod retouch_ui;
 pub mod roto_edit;
+pub mod roto_ui;
 pub mod rulers;
 pub mod shortcut_dispatch;
 pub mod shortcuts;

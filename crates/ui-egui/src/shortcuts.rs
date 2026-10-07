@@ -257,6 +257,10 @@ pub fn handle(app: &mut PhotocraftApp, ctx: &egui::Context) {
             return;
         }
     }
+    // Roto tool: Delete removes the selected points, arrows nudge, ↩ / Esc finish the shape.
+    if focus == Focus::None && crate::roto_ui::keys(app, ctx) {
+        return;
+    }
     // Inline type editing eats text and navigation keys; ⌘-shortcuts still reach the menus.
     let editing = crate::type_tool::handle_keys(app, ctx);
     // Registry, UI and menu-catalogue shortcuts (see [`crate::shortcut_dispatch::bindings`]).
