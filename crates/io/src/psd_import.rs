@@ -654,6 +654,8 @@ pub fn psd_to_document(file: &PsdFile) -> (Document, Vec<String>) {
     crate::slices_map::import(&mut doc);
     // Character and paragraph styles from the type layers' engine data.
     crate::text_styles_map::import(&mut doc);
+    // Roto masks baked into layer masks on export (private `PcRM` blocks).
+    crate::roto_map::import_all(&mut doc, &mut cx.warnings);
 
     (doc, cx.warnings)
 }

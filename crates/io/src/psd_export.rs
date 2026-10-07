@@ -155,7 +155,11 @@ impl Ex {
         let mut mask = MaskData::None;
         // Vector mask density/feather live in the mask parameters, with or without a user mask.
         let vector = l.vector_mask.as_ref().map(|vm| (vm.density, vm.feather));
-        if let Some(m) = &l.mask {
+        // A roto mask is baked into the layer mask Photoshop sees (times any pixel mask).
+        let roto = l.roto_mask.as_ref();
+        let baked = roto.filter(|r| r.enabled).map(|r| crate::roto_map::bake(l.mask.as_ref(), r, self.canvas, self.mask_fmt));
+        let exported = baked.as_ref().or(l.mask.as_ref());
+        if let Some(m) = exported {
             let (md, ch) = self.mask(m, vector);
             mask = md;
             channels.extend(ch);
@@ -195,6 +199,10 @@ impl Ex {
             blocks.push(TaggedBlock::new(key, d));
         }
         blocks.extend(extra);
+        // The editable splines, restored on import while the baked mask is unchanged.
+        if let Some(r) = roto {
+            blocks.push(TaggedBlock::new(crate::roto_map::KEY, crate::roto_map::encode(r, l.mask.as_ref(), exported, baked.is_some(), self.canvas)));
+        }
         // Layer-level blocks keep their pad byte inside the length, as Photoshop writes them:
         // readers such as psd-tools do not skip a pad after an odd length, so a regenerated
         // odd-length `lfx2` misaligned every block after it (#200).

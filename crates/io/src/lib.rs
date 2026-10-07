@@ -38,6 +38,7 @@ mod pixels;
 mod psd_export;
 mod psd_import;
 pub mod raw;
+pub(crate) mod roto_map;
 pub mod slices_map;
 pub mod text_styles_map;
 pub mod vector_map;
