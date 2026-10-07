@@ -227,6 +227,10 @@ pub enum RotoError {
     TooManyPoints(String),
     #[error("value out of range: {0}")]
     OutOfRange(String),
+    #[error("no node with id {0}")]
+    NoSuchNode(u64),
+    #[error("{0}")]
+    Invalid(String),
 }
 
 impl RotoMask {
@@ -276,6 +280,249 @@ fn validate_group(g: &Group, depth: usize, count: &mut usize) -> Result<(), Roto
     Ok(())
 }
 
+fn node_id(n: &Node) -> NodeId {
+    match n {
+        Node::Group(g) => g.id,
+        Node::Shape(s) => s.id,
+    }
+}
+
+fn find_in(g: &Group, id: NodeId) -> Option<&Node> {
+    for n in &g.children {
+        if node_id(n) == id {
+            return Some(n);
+        }
+        if let Node::Group(c) = n
+            && let Some(found) = find_in(c, id)
+        {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn find_in_mut(g: &mut Group, id: NodeId) -> Option<&mut Node> {
+    for n in &mut g.children {
+        if node_id(n) == id {
+            return Some(n);
+        }
+        if let Node::Group(c) = n
+            && let Some(found) = find_in_mut(c, id)
+        {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn locate_in(g: &Group, id: NodeId) -> Option<(NodeId, usize)> {
+    for (i, n) in g.children.iter().enumerate() {
+        if node_id(n) == id {
+            return Some((g.id, i));
+        }
+        if let Node::Group(c) = n
+            && let Some(found) = locate_in(c, id)
+        {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn max_ids(g: &Group, nodes: &mut u64, points: &mut u64) {
+    for n in &g.children {
+        match n {
+            Node::Group(c) => {
+                *nodes = (*nodes).max(c.id.0);
+                max_ids(c, nodes, points);
+            }
+            Node::Shape(s) => {
+                *nodes = (*nodes).max(s.id.0);
+                for p in &s.points {
+                    *points = (*points).max(p.id.0);
+                }
+            }
+        }
+    }
+}
+
+fn take_id(counter: &mut u64) -> u64 {
+    let v = *counter;
+    *counter = counter.saturating_add(1);
+    v
+}
+
+fn clone_fresh(n: &Node, next_node: &mut u64, next_point: &mut u64) -> Node {
+    match n {
+        Node::Shape(s) => {
+            let mut c = s.clone();
+            c.id = NodeId(take_id(next_node));
+            for p in &mut c.points {
+                p.id = PointId(take_id(next_point));
+            }
+            Node::Shape(c)
+        }
+        Node::Group(g) => {
+            let mut c = g.clone();
+            c.id = NodeId(take_id(next_node));
+            c.children = g.children.iter().map(|ch| clone_fresh(ch, next_node, next_point)).collect();
+            Node::Group(c)
+        }
+    }
+}
+
+impl RotoMask {
+    /// An id above every node id in the tree (the root is id 0).
+    pub fn next_node_id(&self) -> NodeId {
+        let (mut nodes, mut points) = (self.root.id.0, 0);
+        max_ids(&self.root, &mut nodes, &mut points);
+        NodeId(nodes.saturating_add(1))
+    }
+
+    /// An id above every point id in the tree.
+    pub fn next_point_id(&self) -> PointId {
+        let (mut nodes, mut points) = (0, 0);
+        max_ids(&self.root, &mut nodes, &mut points);
+        PointId(points.saturating_add(1))
+    }
+
+    pub fn find(&self, id: NodeId) -> Option<&Node> {
+        find_in(&self.root, id)
+    }
+
+    pub fn find_mut(&mut self, id: NodeId) -> Option<&mut Node> {
+        find_in_mut(&mut self.root, id)
+    }
+
+    pub fn shape_mut(&mut self, id: NodeId) -> Option<&mut Shape> {
+        match self.find_mut(id) {
+            Some(Node::Shape(s)) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// A group by id; the root group is id 0.
+    pub fn group_mut(&mut self, id: NodeId) -> Option<&mut Group> {
+        if id == self.root.id {
+            return Some(&mut self.root);
+        }
+        match self.find_mut(id) {
+            Some(Node::Group(g)) => Some(g),
+            _ => None,
+        }
+    }
+
+    /// The parent group's id and the node's index within it.
+    pub fn locate(&self, id: NodeId) -> Option<(NodeId, usize)> {
+        locate_in(&self.root, id)
+    }
+
+    /// Inserts `node` into group `parent` at `index` (appended on top when `None` or past the end).
+    pub fn insert(&mut self, parent: NodeId, index: Option<usize>, node: Node) -> Result<(), RotoError> {
+        let g = self.group_mut(parent).ok_or(RotoError::NoSuchNode(parent.0))?;
+        let at = index.map_or(g.children.len(), |i| i.min(g.children.len()));
+        g.children.insert(at, node);
+        Ok(())
+    }
+
+    /// Removes and returns a node (with its subtree).
+    pub fn remove(&mut self, id: NodeId) -> Option<Node> {
+        let (parent, index) = self.locate(id)?;
+        let g = self.group_mut(parent)?;
+        (index < g.children.len()).then(|| g.children.remove(index))
+    }
+
+    /// Moves a node to `index` within its parent (clamped).
+    pub fn reorder(&mut self, id: NodeId, index: usize) -> Result<(), RotoError> {
+        let (parent, from) = self.locate(id).ok_or(RotoError::NoSuchNode(id.0))?;
+        let g = self.group_mut(parent).ok_or(RotoError::NoSuchNode(parent.0))?;
+        let node = g.children.remove(from);
+        let at = index.min(g.children.len());
+        g.children.insert(at, node);
+        Ok(())
+    }
+
+    /// Wraps sibling nodes in a new group placed where the topmost member was, keeping the
+    /// members' tree order. Returns the new group's id.
+    pub fn group(&mut self, ids: &[NodeId], name: &str) -> Result<NodeId, RotoError> {
+        if ids.is_empty() {
+            return Err(RotoError::Invalid("nothing to group".into()));
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut parent = None;
+        let mut indices = Vec::with_capacity(ids.len());
+        for id in ids {
+            if !seen.insert(*id) {
+                return Err(RotoError::Invalid(format!("node {} listed twice", id.0)));
+            }
+            let (p, i) = self.locate(*id).ok_or(RotoError::NoSuchNode(id.0))?;
+            if *parent.get_or_insert(p) != p {
+                return Err(RotoError::Invalid("nodes to group must share a parent".into()));
+            }
+            indices.push(i);
+        }
+        let parent = parent.ok_or_else(|| RotoError::Invalid("nothing to group".into()))?;
+        indices.sort_unstable();
+        let gid = self.next_node_id();
+        let g = self.group_mut(parent).ok_or(RotoError::NoSuchNode(parent.0))?;
+        let mut members = Vec::with_capacity(indices.len());
+        for i in indices.iter().rev() {
+            members.push(g.children.remove(*i));
+        }
+        members.reverse();
+        let mut group = Group::new(gid, name);
+        group.children = members;
+        let at = indices.first().copied().unwrap_or(0).min(g.children.len());
+        g.children.insert(at, Node::Group(group));
+        Ok(gid)
+    }
+
+    /// Replaces a group by its children. Refused unless the group is neutral (identity transform,
+    /// opacity 1, union, visible), because ungrouping must not change the rendered mask.
+    pub fn ungroup(&mut self, id: NodeId) -> Result<Vec<NodeId>, RotoError> {
+        let Some(Node::Group(g)) = self.find(id) else {
+            return Err(RotoError::Invalid(format!("node {} is not a group", id.0)));
+        };
+        if g.transform != Transform2D::default() || g.opacity != 1.0 || g.blend_op != BlendOp::Union || !g.visible {
+            return Err(RotoError::Invalid("ungrouping would change the result: reset the group transform, opacity, blend and visibility first".into()));
+        }
+        let child_ids: Vec<NodeId> = g.children.iter().map(node_id).collect();
+        let (parent, index) = self.locate(id).ok_or(RotoError::NoSuchNode(id.0))?;
+        let pg = self.group_mut(parent).ok_or(RotoError::NoSuchNode(parent.0))?;
+        let Node::Group(removed) = pg.children.remove(index) else {
+            return Err(RotoError::Invalid("not a group".into()));
+        };
+        for (k, child) in removed.children.into_iter().enumerate() {
+            pg.children.insert(index + k, child);
+        }
+        Ok(child_ids)
+    }
+
+    /// Deep-copies nodes with fresh ids, each copy placed right above its original. Returns the
+    /// copies' ids in the order given.
+    pub fn duplicate(&mut self, ids: &[NodeId]) -> Result<Vec<NodeId>, RotoError> {
+        let mut seen = std::collections::HashSet::new();
+        for id in ids {
+            if !seen.insert(*id) {
+                return Err(RotoError::Invalid(format!("node {} listed twice", id.0)));
+            }
+            if self.find(*id).is_none() {
+                return Err(RotoError::NoSuchNode(id.0));
+            }
+        }
+        let (mut next_node, mut next_point) = (self.next_node_id().0, self.next_point_id().0);
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids {
+            let original = self.find(*id).cloned().ok_or(RotoError::NoSuchNode(id.0))?;
+            let copy = clone_fresh(&original, &mut next_node, &mut next_point);
+            out.push(node_id(&copy));
+            let (parent, index) = self.locate(*id).ok_or(RotoError::NoSuchNode(id.0))?;
+            self.insert(parent, Some(index + 1), copy)?;
+        }
+        Ok(out)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -322,5 +569,134 @@ mod tests {
         let j = serde_json::to_string(&m).unwrap();
         let back: RotoMask = serde_json::from_str(&j).unwrap();
         assert_eq!(m, back);
+    }
+
+    fn shape_with(id: u64, n: u64) -> Shape {
+        let mut s = Shape::new(NodeId(id), &format!("Bezier{id}"));
+        for i in 0..n {
+            s.points.push(Point::corner(PointId(id * 100 + i), i as f64, 0.0));
+        }
+        s
+    }
+
+    fn mask3() -> RotoMask {
+        let mut m = RotoMask::default();
+        for id in 1..=3 {
+            m.root.children.push(Node::Shape(shape_with(id, 3)));
+        }
+        m
+    }
+
+    fn ids(m: &RotoMask) -> Vec<u64> {
+        m.root
+            .children
+            .iter()
+            .map(|n| match n {
+                Node::Shape(s) => s.id.0,
+                Node::Group(g) => g.id.0,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn ids_are_allocated_above_every_existing_one() {
+        let m = mask3();
+        assert_eq!(m.next_node_id(), NodeId(4));
+        assert_eq!(m.next_point_id(), PointId(303));
+        assert_eq!(RotoMask::default().next_node_id(), NodeId(1));
+        assert_eq!(RotoMask::default().next_point_id(), PointId(1));
+    }
+
+    #[test]
+    fn find_locate_and_remove() {
+        let mut m = mask3();
+        assert!(matches!(m.find(NodeId(2)), Some(Node::Shape(s)) if s.id == NodeId(2)));
+        assert_eq!(m.locate(NodeId(3)), Some((NodeId(0), 2)));
+        assert!(m.find(NodeId(99)).is_none());
+        assert!(m.remove(NodeId(2)).is_some());
+        assert_eq!(ids(&m), vec![1, 3]);
+        assert!(m.remove(NodeId(2)).is_none());
+    }
+
+    #[test]
+    fn reorder_clamps_and_preserves_the_rest() {
+        let mut m = mask3();
+        m.reorder(NodeId(1), 2).unwrap();
+        assert_eq!(ids(&m), vec![2, 3, 1]);
+        m.reorder(NodeId(1), 99).unwrap();
+        assert_eq!(ids(&m), vec![2, 3, 1]);
+        m.reorder(NodeId(1), 0).unwrap();
+        assert_eq!(ids(&m), vec![1, 2, 3]);
+        assert_eq!(m.reorder(NodeId(42), 0), Err(RotoError::NoSuchNode(42)));
+    }
+
+    #[test]
+    fn group_then_ungroup_preserves_order_and_ids() {
+        let mut m = mask3();
+        let g = m.group(&[NodeId(1), NodeId(3)], "Group1").unwrap();
+        assert_eq!(g, NodeId(4));
+        // The group sits where its topmost-listed member was; member order is kept.
+        assert_eq!(ids(&m), vec![4, 2]);
+        let Some(Node::Group(grp)) = m.find(g) else { panic!("group") };
+        assert_eq!(grp.children.len(), 2);
+        assert_eq!(m.locate(NodeId(3)), Some((g, 1)));
+        let back = m.ungroup(g).unwrap();
+        assert_eq!(back, vec![NodeId(1), NodeId(3)]);
+        assert_eq!(ids(&m), vec![1, 3, 2]);
+        m.validate().unwrap();
+    }
+
+    #[test]
+    fn group_rejects_mixed_parents_empty_and_unknown() {
+        let mut m = mask3();
+        let g = m.group(&[NodeId(1), NodeId(2)], "g").unwrap();
+        assert!(matches!(m.group(&[NodeId(3), NodeId(1)], "x"), Err(RotoError::Invalid(_))), "different parents");
+        assert!(matches!(m.group(&[], "x"), Err(RotoError::Invalid(_))));
+        assert_eq!(m.group(&[NodeId(77)], "x"), Err(RotoError::NoSuchNode(77)));
+        assert!(matches!(m.group(&[g, g], "x"), Err(RotoError::Invalid(_))), "duplicate ids");
+    }
+
+    #[test]
+    fn ungroup_refuses_when_it_would_change_the_result() {
+        let mut m = mask3();
+        let g = m.group(&[NodeId(1)], "g").unwrap();
+        if let Some(Node::Group(grp)) = m.find_mut(g) {
+            grp.opacity = 0.5;
+        }
+        assert!(matches!(m.ungroup(g), Err(RotoError::Invalid(_))));
+        assert!(matches!(m.ungroup(NodeId(2)), Err(RotoError::Invalid(_))), "a shape is not a group");
+    }
+
+    #[test]
+    fn duplicate_deep_copies_with_fresh_ids_after_the_originals() {
+        let mut m = mask3();
+        let g = m.group(&[NodeId(1), NodeId(2)], "g").unwrap();
+        let copies = m.duplicate(&[g]).unwrap();
+        assert_eq!(copies.len(), 1);
+        assert_eq!(ids(&m), vec![g.0, copies[0].0, 3]);
+        // Every node and point id in the tree is unique after duplication.
+        fn collect(g: &Group, nodes: &mut Vec<u64>, points: &mut Vec<u64>) {
+            for n in &g.children {
+                match n {
+                    Node::Group(c) => {
+                        nodes.push(c.id.0);
+                        collect(c, nodes, points);
+                    }
+                    Node::Shape(s) => {
+                        nodes.push(s.id.0);
+                        points.extend(s.points.iter().map(|p| p.id.0));
+                    }
+                }
+            }
+        }
+        let (mut nodes, mut points) = (Vec::new(), Vec::new());
+        collect(&m.root, &mut nodes, &mut points);
+        let (n, p) = (nodes.len(), points.len());
+        nodes.sort_unstable();
+        nodes.dedup();
+        points.sort_unstable();
+        points.dedup();
+        assert_eq!((nodes.len(), points.len()), (n, p));
+        assert_eq!(n, 7);
     }
 }
