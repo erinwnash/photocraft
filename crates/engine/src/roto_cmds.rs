@@ -652,6 +652,7 @@ fn node_set(s: &mut Session, p: &Value) -> Result<Value> {
         Some(b) => Some(blend_op(b).ok_or_else(|| bad(CMD, format!("unknown blendOp `{b}`")))?),
     };
     let invert = opt_bool(CMD, p, "invert")?;
+    let closed = opt_bool(CMD, p, "closed")?;
     let blur = match opt_f64(CMD, p, "blur")? {
         None => None,
         Some(b) if (0.0..=f64::from(MAX_BLUR)).contains(&b) => Some(b as f32),
@@ -669,6 +670,7 @@ fn node_set(s: &mut Session, p: &Value) -> Result<Value> {
                 sh.opacity = opacity.unwrap_or(sh.opacity);
                 sh.blend_op = blend.unwrap_or(sh.blend_op);
                 sh.invert = invert.unwrap_or(sh.invert);
+                sh.closed = closed.unwrap_or(sh.closed);
                 sh.blur = blur.unwrap_or(sh.blur);
                 sh.falloff = fall.unwrap_or(sh.falloff);
             }
@@ -885,6 +887,90 @@ fn point_uncusp(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn point_smooth(s: &mut Session, p: &Value) -> Result<Value> {
     point_shape_op(s, p, "roto.point.smooth", "Smooth Roto Points", Shape::smooth_points)
+}
+
+// ---------------------------------------------------------------------------
+// Selection from the mask
+
+/// Ids of every shape at or under `n` (depth-capped: a valid mask is shallow anyway).
+fn shape_ids_under(n: &Node, depth: usize, out: &mut Vec<NodeId>) {
+    match n {
+        Node::Shape(sh) => out.push(sh.id),
+        Node::Group(g) if depth < 64 => g.children.iter().for_each(|c| shape_ids_under(c, depth + 1, out)),
+        Node::Group(_) => {}
+    }
+}
+
+/// `m` with only the shapes in `keep` visible (and those forced visible; enclosing groups keep
+/// their own visibility and transforms).
+fn only_shapes(m: &RotoMask, keep: &[NodeId]) -> RotoMask {
+    fn walk(n: &mut Node, keep: &[NodeId], depth: usize) {
+        match n {
+            Node::Shape(sh) => sh.visible = keep.contains(&sh.id),
+            Node::Group(g) if depth < 64 => g.children.iter_mut().for_each(|c| walk(c, keep, depth + 1)),
+            Node::Group(_) => {}
+        }
+    }
+    let mut out = m.clone();
+    out.enabled = true;
+    out.root.children.iter_mut().for_each(|c| walk(c, keep, 0));
+    out
+}
+
+/// Makes the document selection from the mask: the whole mask as drawn (`node` 0, the default),
+/// or just one group or shape. With `"each": true` every shape under the node is evaluated on its
+/// own (ignoring the blend ops between them) and the results are unioned, so a Subtract shape does
+/// not cut its neighbours but adds its own area.
+fn make_selection(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "roto.selection.make";
+    let id = layer_id(s, p)?;
+    let node = match p.get("node") {
+        None | Some(Value::Null) => NodeId(0),
+        Some(_) => node_id(CMD, p, "node")?,
+    };
+    let each = opt_bool(CMD, p, "each")?.unwrap_or(false);
+    let mode = match p.get("mode").and_then(Value::as_str).unwrap_or("replace") {
+        m @ ("replace" | "add" | "subtract" | "intersect") => m,
+        m => return Err(bad(CMD, format!("unknown mode `{m}` (replace, add, subtract, intersect)"))),
+    };
+    let d = s.active().ok_or(EngineError::NoDocument)?;
+    let area = d.doc.bounds();
+    let m = d.doc.layer(id).ok_or(EngineError::NoLayer(id))?.roto_mask.as_ref().ok_or_else(|| EngineError::Other("layer has no roto mask".into()))?;
+    let mut ids = Vec::new();
+    if node == NodeId(0) || node == m.root.id {
+        m.root.children.iter().for_each(|c| shape_ids_under(c, 0, &mut ids));
+    } else {
+        shape_ids_under(m.find(node).ok_or_else(|| bad(CMD, format!("no node with id {}", node.0)))?, 0, &mut ids);
+    }
+    if ids.is_empty() {
+        return Err(bad(CMD, "there are no shapes to make a selection from"));
+    }
+    let n = area.width() as usize * area.height() as usize;
+    let whole = node == NodeId(0) || node == m.root.id;
+    let values = if each {
+        let mut acc = vec![0.0f32; n];
+        for sid in &ids {
+            let v = vector::roto::roto_values_auto(&only_shapes(m, &[*sid]), area);
+            if v.len() != n {
+                return Err(bad(CMD, "the document is too large to evaluate the mask"));
+            }
+            acc.iter_mut().zip(v).for_each(|(a, b)| *a = a.max(b));
+        }
+        acc
+    } else if whole {
+        vector::roto::roto_values_auto(m, area)
+    } else {
+        vector::roto::roto_values_auto(&only_shapes(m, &ids), area)
+    };
+    if values.len() != n {
+        return Err(bad(CMD, "the document is too large to evaluate the mask"));
+    }
+    let mode = photocraft_algo::selection::SelectionMode::parse(mode);
+    let selected = s.edit("Selection from Roto Mask", |doc, _| {
+        doc.selection = photocraft_algo::selection::combine(doc.selection.as_ref(), &values, area, mode);
+        Ok(doc.selection.is_some())
+    })?;
+    Ok(json!({ "selected": selected, "shapes": ids.len() }))
 }
 
 // ---------------------------------------------------------------------------
@@ -1271,9 +1357,17 @@ pub fn specs() -> Vec<CommandSpec> {
             "roto.node.set",
             "Roto Node Settings",
             [],
-            r##"{"layer":id?,"id":nodeId,"visible":bool?,"locked":bool?,"opacity":0..1?,"blendOp":"union|subtract|intersect|max|min|multiply|difference"?,"invert":bool? (shapes),"blur":px? (shapes),"falloff":"linear|smooth|easeIn|easeOut"? (shapes)}"##,
+            r##"{"layer":id?,"id":nodeId,"visible":bool?,"locked":bool?,"opacity":0..1?,"blendOp":"union|subtract|intersect|max|min|multiply|difference"?,"invert":bool? (shapes),"closed":bool? (shapes: join or open the last and first points),"blur":px? (shapes),"falloff":"linear|smooth|easeIn|easeOut"? (shapes)}"##,
             has_roto,
             node_set
+        ),
+        spec!(
+            "roto.selection.make",
+            "Selection from Roto Mask",
+            [],
+            r##"{"layer":id?,"node":id|0? (0/omitted = all splines together; a group or a shape id = just that),"each":bool=false (evaluate every spline on its own and union them, ignoring blend ops),"mode":"replace|add|subtract|intersect"} → {selected,shapes}"##,
+            has_roto,
+            make_selection
         ),
         spec!(
             "roto.node.transform",

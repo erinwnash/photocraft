@@ -135,6 +135,9 @@ pub struct RotoUi {
     /// applied to the layer as you draw.
     #[serde(default)]
     pub matte_overlay: bool,
+    /// Make Selection evaluates each spline on its own and unions them (ignoring blend ops).
+    #[serde(default)]
+    pub selection_each: bool,
     #[serde(skip)]
     matte: Matte,
     /// The layer this app put in the editing view. The view is process-wide state, so the app only
@@ -244,7 +247,17 @@ fn point_texts(id: &str) -> (&'static str, &'static str) {
 
 /// Is `id` one of the point commands?
 pub fn handles(id: &str) -> bool {
-    POINT_OPS.iter().any(|o| o.0 == id)
+    id == SELECTION_CMD || POINT_OPS.iter().any(|o| o.0 == id)
+}
+
+/// Shell command id of Layer > Roto Mask > Selection from Roto Mask.
+const SELECTION_CMD: &str = "roto.selectionFromMask";
+
+/// Makes the document selection from the node chosen in the Roto panel (a group or a shape), or
+/// from all the splines together when none is chosen. `mode` is a selection mode.
+fn make_selection(app: &mut PhotocraftApp, mode: &str) -> Result<Value, String> {
+    let node = active(app).and_then(|(_, m)| app.ui.roto.nodes.first().copied().filter(|id| m.find(*id).is_some())).map_or(0, |id| id.0);
+    app.run("roto.selection.make", json!({"node": node, "each": app.ui.roto.selection_each, "mode": mode}))
 }
 
 /// What the point commands act on: the selected points, else every point of a shape: the one the
@@ -264,6 +277,9 @@ fn point_targets(app: &PhotocraftApp) -> Option<(NodeId, Option<Vec<PointId>>)> 
 
 /// Whether a point command can run now (`None` for other commands).
 pub fn is_enabled(app: &PhotocraftApp, id: &str) -> Option<bool> {
+    if id == SELECTION_CMD {
+        return Some(active(app).is_some_and(|(_, m)| !m.root.children.is_empty()));
+    }
     handles(id).then(|| point_targets(app).is_some())
 }
 
@@ -279,6 +295,9 @@ fn point_op(app: &mut PhotocraftApp, engine_cmd: &str) -> Result<Value, String> 
 
 /// Menu and hotkey entry for the point commands (`None` for other commands).
 pub fn menu(app: &mut PhotocraftApp, id: &str, _params: &Value) -> Option<Result<Value, String>> {
+    if id == SELECTION_CMD {
+        return Some(make_selection(app, "replace"));
+    }
     let (_, cmd) = POINT_OPS.iter().find(|o| o.0 == id)?;
     Some(point_op(app, cmd))
 }
@@ -485,6 +504,7 @@ fn pen_down(app: &mut PhotocraftApp, p: P2) {
             let all = shape_points(m, id);
             app.ui.roto.drawing = None;
             app.ui.roto.sel.set(id, all, false);
+            run(app, "roto.node.set", json!({"id": id.0, "closed": true}));
             return;
         }
     }
@@ -498,7 +518,7 @@ fn pen_down(app: &mut PhotocraftApp, p: P2) {
             (id, r.get("id").and_then(Value::as_u64))
         }
         None => {
-            let Some(r) = run(app, "roto.node.add_shape", json!({"points": [local], "closed": true})) else { return };
+            let Some(r) = run(app, "roto.node.add_shape", json!({"points": [local], "closed": false})) else { return };
             let id = r.get("id").and_then(Value::as_u64).map(NodeId);
             let first = r.get("points").and_then(|v| v.get(0)).and_then(Value::as_u64);
             match id {
@@ -620,14 +640,19 @@ pub fn keys(app: &mut PhotocraftApp, ctx: &egui::Context) -> bool {
         return false;
     }
     let pressed = |k: egui::Key, m: Modifiers| ctx.input_mut(|i| i.consume_key(m, k));
-    if app.ui.roto.drawing.is_some() && (pressed(egui::Key::Enter, Modifiers::NONE) || pressed(egui::Key::Escape, Modifiers::NONE)) {
-        // The finished shape is selected whole, so Smooth and Cusp act on all of its points.
-        if let Some((id, Some((_, m)))) = app.ui.roto.drawing.map(|id| (id, active(app))) {
-            let all = shape_points(m, id);
+    // Enter finishes the shape and joins its last point to the first; Escape finishes it open.
+    if let Some(id) = app.ui.roto.drawing {
+        let enter = pressed(egui::Key::Enter, Modifiers::NONE);
+        if enter || pressed(egui::Key::Escape, Modifiers::NONE) {
+            // The finished shape is selected whole, so Smooth and Cusp act on all of its points.
+            let all = active(app).map(|(_, m)| shape_points(m, id)).unwrap_or_default();
+            app.ui.roto.drawing = None;
+            if enter && all.len() >= 3 {
+                run(app, "roto.node.set", json!({"id": id.0, "closed": true}));
+            }
             app.ui.roto.sel.set(id, all, false);
+            return true;
         }
-        app.ui.roto.drawing = None;
-        return true;
     }
     if app.ui.roto.gesture.is_some() && pressed(egui::Key::Escape, Modifiers::NONE) {
         app.ui.roto.gesture = None;
@@ -781,6 +806,15 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
             app.ui.status = e;
             app.ui.status_error = true;
         }
+    }
+    crate::widgets::vline(ui, 22.0);
+    let can_select = is_enabled(app, SELECTION_CMD) == Some(true);
+    let tip = crate::shortcuts::tip_label(app, tl!("Make a selection from the node chosen in the Roto panel, or from all the splines"), SELECTION_CMD);
+    let make = ui.add_enabled_ui(can_select, |ui| crate::widgets::secondary_button(ui, tl!("To Selection"), 96.0).on_hover_text(tip).clicked()).inner;
+    crate::widgets::checkbox(ui, &mut app.ui.roto.selection_each, tl!("Each spline"));
+    if make && let Err(e) = make_selection(app, "replace") {
+        app.ui.status = e;
+        app.ui.status_error = true;
     }
     crate::widgets::vline(ui, 22.0);
     let mut show = !app.ui.roto.hide_feather;

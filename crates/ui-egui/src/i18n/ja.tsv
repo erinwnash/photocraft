@@ -2010,3 +2010,7 @@
 	OpenGL	OpenGL
 	Use tablet pressure	タブレットの筆圧を使用
 	Vulkan	Vulkan
+	To Selection	選択範囲に変換
+	Each spline	スプラインごと
+	Make a selection from the node chosen in the Roto panel, or from all the splines	ロトパネルで選んだノード、またはすべてのスプラインから選択範囲を作成します
+	Selection from Roto Mask	ロトマスクから選択範囲を作成

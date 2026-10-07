@@ -631,3 +631,62 @@ fn point_shape_commands_reject_bad_ids_without_touching_anything() {
     assert_eq!(mask(&s), before);
     assert_eq!(revision(&s), rev);
 }
+
+fn selection_values(s: &Session) -> Vec<f32> {
+    let d = s.active().unwrap();
+    photocraft_algo::selection::mask_from_surface(d.doc.selection.as_ref(), d.doc.bounds())
+}
+
+fn selected_area(s: &Session) -> f64 {
+    selection_values(s).iter().map(|v| f64::from(*v)).sum()
+}
+
+#[test]
+fn selection_from_a_shape_a_group_or_the_whole_mask() {
+    let mut s = with_roto_layer(100, 100);
+    let a = add_rect(&mut s, 0.0, 0.0, 20.0, 20.0);
+    let b = add_rect(&mut s, 30.0, 0.0, 20.0, 20.0);
+    let c = add_rect(&mut s, 60.0, 0.0, 20.0, 20.0);
+    let g = s.execute("roto.node.group", json!({"ids": [b, c]})).unwrap()["id"].as_u64().unwrap();
+    let one = |s: &mut Session, params: Value| {
+        let r = s.execute("roto.selection.make", params).unwrap();
+        (selected_area(s), r["shapes"].as_u64().unwrap())
+    };
+    assert_eq!(one(&mut s, json!({"node": a})), (400.0, 1));
+    assert_eq!(one(&mut s, json!({"node": g})), (800.0, 2));
+    assert_eq!(one(&mut s, json!({})), (1200.0, 3));
+    assert_eq!(one(&mut s, json!({"node": 0})), (1200.0, 3));
+    // Modes combine with the existing selection.
+    s.execute("roto.selection.make", json!({"node": a})).unwrap();
+    s.execute("roto.selection.make", json!({"node": g, "mode": "add"})).unwrap();
+    assert_eq!(selected_area(&s), 1200.0);
+    s.execute("roto.selection.make", json!({"node": b, "mode": "subtract"})).unwrap();
+    assert_eq!(selected_area(&s), 800.0);
+    // One undo step.
+    undo(&mut s);
+    assert_eq!(selected_area(&s), 1200.0);
+}
+
+#[test]
+fn selection_each_spline_ignores_the_blend_ops_between_them() {
+    let mut s = with_roto_layer(100, 100);
+    let big = add_rect(&mut s, 0.0, 0.0, 40.0, 40.0);
+    let hole = add_rect(&mut s, 10.0, 10.0, 20.0, 20.0);
+    s.execute("roto.node.set", json!({"id": hole, "blendOp": "subtract"})).unwrap();
+    let _ = big;
+    s.execute("roto.selection.make", json!({})).unwrap();
+    assert_eq!(selected_area(&s), 1200.0, "together: the subtract shape cuts a hole");
+    s.execute("roto.selection.make", json!({"each": true})).unwrap();
+    assert_eq!(selected_area(&s), 1600.0, "each on its own, unioned: the hole is filled");
+}
+
+#[test]
+fn selection_from_roto_rejects_bad_input_and_changes_nothing() {
+    let mut s = with_roto_layer(100, 100);
+    assert!(s.execute("roto.selection.make", json!({})).is_err(), "no shapes");
+    let a = add_rect(&mut s, 0.0, 0.0, 20.0, 20.0);
+    for params in [json!({"node": 999}), json!({"node": a, "mode": "xor"}), json!({"each": "yes"}), json!({"node": "a"})] {
+        assert!(s.execute("roto.selection.make", params.clone()).is_err(), "{params}");
+    }
+    assert!(s.active().unwrap().doc.selection.is_none());
+}

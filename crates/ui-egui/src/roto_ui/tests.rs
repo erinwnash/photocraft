@@ -575,7 +575,7 @@ fn point_buttons_act_on_the_whole_shape_when_no_points_are_selected() {
     menu(&mut a, "roto.cuspPoints", &json!({})).unwrap().unwrap();
     assert!(shapes(&a)[0].points.iter().all(|p| !p.smooth));
     menu(&mut a, "roto.smoothPoints", &json!({})).unwrap().unwrap();
-    assert!(shapes(&a)[0].points.iter().all(|p| p.smooth && p.tangent_out != V2::ZERO));
+    assert!(shapes(&a)[0].points.iter().all(|p| p.smooth && (p.tangent_out != V2::ZERO || p.tangent_in != V2::ZERO)));
 }
 
 #[test]
@@ -621,4 +621,71 @@ fn clicking_the_smooth_button_smooths_the_selected_point() {
     let a = h.state();
     eprintln!("status {:?} err {}", a.ui.status, a.ui.status_error);
     assert!(shapes(a)[0].points[0].smooth, "button click smoothed the point");
+}
+
+#[test]
+fn a_pen_shape_stays_open_until_enter_or_a_click_on_its_first_point() {
+    let ctx = egui::Context::default();
+    let key = |a: &mut PhotocraftApp, k: egui::Key| {
+        let raw = egui::RawInput {
+            events: vec![egui::Event::Key { key: k, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE }],
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(raw, |ui| assert!(keys(a, ui.ctx())));
+        out.textures_delta.clear();
+    };
+    let pts = [[40.0, 40.0], [160.0, 40.0], [160.0, 160.0], [40.0, 160.0]];
+    // Enter joins the last point to the first.
+    let mut a = app();
+    a.ui.roto.mode = RotoMode::Pen;
+    for p in pts {
+        click(&mut a, p, Modifiers::NONE);
+    }
+    assert!(!shapes(&a)[0].closed, "still open while drawing");
+    assert!(a.ui.roto.drawing.is_some());
+    key(&mut a, egui::Key::Enter);
+    assert!(shapes(&a)[0].closed && a.ui.roto.drawing.is_none());
+    let area: f64 = vector::roto::roto_values(&mask(&a), photocraft_geom::Rect::new(0, 0, 300, 300)).iter().map(|v| f64::from(*v)).sum();
+    assert!(area > 100.0 * 100.0, "a closed 120x120 square fills: {area}");
+    // Clicking the first point closes it.
+    let mut a = app();
+    a.ui.roto.mode = RotoMode::Pen;
+    for p in pts {
+        click(&mut a, p, Modifiers::NONE);
+    }
+    click(&mut a, pts[0], Modifiers::NONE);
+    assert!(shapes(&a)[0].closed && a.ui.roto.drawing.is_none());
+    assert_eq!(shapes(&a)[0].points.len(), 4);
+    // Escape finishes it open; Enter on fewer than three points leaves it open too.
+    let mut a = app();
+    a.ui.roto.mode = RotoMode::Pen;
+    click(&mut a, pts[0], Modifiers::NONE);
+    click(&mut a, pts[1], Modifiers::NONE);
+    key(&mut a, egui::Key::Enter);
+    assert!(!shapes(&a)[0].closed && a.ui.roto.drawing.is_none());
+}
+
+#[test]
+fn the_selection_command_uses_the_panel_node_or_all_splines_and_each_spline_option() {
+    let ctx = egui::Context::default();
+    let mut a = with_rect();
+    a.ui.roto.mode = RotoMode::Rectangle;
+    drag(&mut a, [150.0, 20.0], [200.0, 80.0], Modifiers::NONE);
+    let area = |a: &PhotocraftApp| -> f64 {
+        let d = a.session.active().unwrap();
+        photocraft_algo::selection::mask_from_surface(d.doc.selection.as_ref(), d.doc.bounds()).iter().map(|v| f64::from(*v)).sum()
+    };
+    assert!(crate::menus::is_enabled(&a, "roto.selectionFromMask"));
+    crate::menus::invoke(&mut a, &ctx, "roto.selectionFromMask", json!({})).unwrap();
+    assert_eq!(area(&a), 80.0 * 60.0 + 50.0 * 60.0, "all splines together");
+    a.ui.roto.nodes = vec![shapes(&a)[1].id];
+    crate::menus::invoke(&mut a, &ctx, "roto.selectionFromMask", json!({})).unwrap();
+    assert_eq!(area(&a), 50.0 * 60.0, "just the node chosen in the panel");
+    a.ui.roto.selection_each = true;
+    a.ui.roto.nodes.clear();
+    crate::menus::invoke(&mut a, &ctx, "roto.selectionFromMask", json!({})).unwrap();
+    assert_eq!(area(&a), 80.0 * 60.0 + 50.0 * 60.0);
+    let mut empty = app();
+    assert!(!crate::menus::is_enabled(&empty, "roto.selectionFromMask"));
+    assert!(crate::menus::invoke(&mut empty, &ctx, "roto.selectionFromMask", json!({})).is_err());
 }

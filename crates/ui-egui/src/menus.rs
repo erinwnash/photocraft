@@ -39,6 +39,7 @@ pub const UI_COMMANDS: &[(&str, &str, &[&str], Option<&str>)] = &[
     ("roto.cuspPoints", "Cusp Points", &["Layer", "Roto Mask"], None),
     ("roto.uncuspPoints", "Uncusp Points", &["Layer", "Roto Mask"], None),
     ("roto.smoothPoints", "Smooth Points", &["Layer", "Roto Mask"], None),
+    ("roto.selectionFromMask", "Selection from Roto Mask", &["Layer", "Roto Mask"], None),
     ("window.toggle.layers", "Layers", &["Window"], Some("F7")),
     ("window.toggle.history", "History", &["Window"], None),
     ("window.toggle.properties", "Properties", &["Window"], None),
