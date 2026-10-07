@@ -351,3 +351,34 @@ fn video_layer_frames_survive_roundtrip() {
     v.frames[2].read_rgba_into(Rect::from_xywh(1, 1, 1, 1), &mut px);
     assert!(px[0][0] > 0.9 && px[0][2] < 0.1, "frame 2 is reddish: {:?}", px[0]);
 }
+
+/// Roto masks (spline tree with feather) survive .pcraft; manifests written before they
+/// existed load with none.
+#[test]
+fn roto_mask_roundtrips_and_defaults_when_absent() {
+    use photocraft_doc::roto::*;
+    let mut doc = rich_doc(ColorMode::Rgb, SampleType::U8);
+    let mut shape = Shape::new(NodeId(1), "Bezier1");
+    for (i, (x, y)) in [(4.0, 4.0), (20.0, 4.0), (20.0, 20.0)].into_iter().enumerate() {
+        let mut p = Point::corner(PointId(i as u64 + 1), x, y);
+        p.feather_pos = V2::new(3.0, -2.0);
+        shape.points.push(p);
+    }
+    shape.opacity = 0.5;
+    let mut mask = RotoMask::default();
+    mask.density = 0.75;
+    mask.root.children.push(Node::Shape(shape));
+    doc.layers[0].roto_mask = Some(mask.clone());
+    let bytes = save_to_bytes(&doc, &SaveOptions::default()).unwrap();
+    let back = load_from_bytes(&bytes).unwrap();
+    assert_eq!(back.layers[0].roto_mask, Some(mask));
+    assert_eq!(back, doc);
+    // A manifest without the field still loads.
+    let m = read_manifest(&bytes).unwrap();
+    let mut v = serde_json::to_value(&m.document).unwrap();
+    for l in v["layers"].as_array_mut().unwrap() {
+        l.as_object_mut().unwrap().remove("roto_mask");
+    }
+    let old: photocraft_format::manifest::DocM = serde_json::from_value(v).unwrap();
+    assert!(old.layers.iter().all(|l| l.roto_mask.is_none()));
+}

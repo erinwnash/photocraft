@@ -15,6 +15,7 @@ pub mod comps;
 pub mod effects;
 pub mod mode;
 pub mod pattern;
+pub mod roto;
 pub mod slices;
 pub mod text;
 pub mod text_styles;
@@ -38,6 +39,7 @@ pub use pattern::Pattern;
 pub use photocraft_color::{BlendMode, Color, ColorMode, PixelFormat, SampleType};
 pub use photocraft_geom::{Affine, Rect, Size};
 pub use photocraft_raster::Surface;
+pub use roto::{RotoError, RotoMask};
 use serde::{Deserialize, Serialize};
 pub use slices::{Slice, SliceKind, SliceOrigin, Slices};
 pub use text_styles::TextStyles;
@@ -434,6 +436,8 @@ pub struct Layer {
     /// Vector mask (Layer › Vector Mask), applied together with `mask`. Shape layers keep their
     /// outline in [`ShapeLayer::path`] instead.
     pub vector_mask: Option<VectorMask>,
+    /// Roto mask (spline tree with feather), applied together with `mask` and `vector_mask`.
+    pub roto_mask: Option<RotoMask>,
     pub effects: Effects,
     pub label: LabelColor,
     pub content: LayerContent,
@@ -477,6 +481,7 @@ impl Layer {
             clipped: false,
             mask: None,
             vector_mask: None,
+            roto_mask: None,
             effects: Effects { enabled: true, ..Default::default() },
             label: LabelColor::None,
             content,

@@ -9,7 +9,7 @@
 
 use photocraft_color::{BlendMode, Color, ColorMode, PixelFormat, SampleType};
 use photocraft_doc::{
-    Adjustment, ClippingPath, Effect, Fill, GlobalLight, Guides, LabelColor, LiveShape, Locks, Path, ShapeStroke, SmartFilter, VectorMask, text,
+    Adjustment, ClippingPath, Effect, Fill, GlobalLight, Guides, LabelColor, LiveShape, Locks, Path, RotoMask, ShapeStroke, SmartFilter, VectorMask, text,
 };
 use photocraft_geom::{Affine, Size};
 use serde::{Deserialize, Serialize};
@@ -207,6 +207,8 @@ pub struct LayerM {
     pub mask: Option<MaskM>,
     #[serde(default)]
     pub vector_mask: Option<VectorMask>,
+    #[serde(default)]
+    pub roto_mask: Option<RotoMask>,
     pub effects: EffectsM,
     pub label: LabelColor,
     pub content: ContentM,

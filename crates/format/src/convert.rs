@@ -164,6 +164,7 @@ fn layer_m(l: &Layer, sink: &mut dyn Sink) -> LayerM {
             feather: m.feather,
         }),
         vector_mask: l.vector_mask.clone(),
+        roto_mask: l.roto_mask.clone(),
         effects: EffectsM {
             enabled: l.effects.enabled,
             items: l.effects.items.clone(),
@@ -443,6 +444,7 @@ impl Loader<'_> {
             clipped: m.clipped,
             mask,
             vector_mask: m.vector_mask.clone(),
+            roto_mask: m.roto_mask.clone(),
             effects: Effects {
                 enabled: m.effects.enabled,
                 items: m.effects.items.clone(),
