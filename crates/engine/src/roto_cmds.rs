@@ -857,6 +857,36 @@ fn point_transform(s: &mut Session, p: &Value) -> Result<Value> {
     })
 }
 
+/// Cusp, uncusp or smooth the listed points (default: all) of a shape. See `Shape::cusp_points`,
+/// `Shape::uncusp_points` and `Shape::smooth_points` for exactly what each does.
+fn point_shape_op(s: &mut Session, p: &Value, cmd: &'static str, label: &str, op: fn(&mut Shape, Option<&[PointId]>) -> usize) -> Result<Value> {
+    let shape = node_id(cmd, p, "shape")?;
+    let ids = point_ids(cmd, p, "ids")?;
+    with_roto(s, p, cmd, label, |m| {
+        let sh = shape_of(cmd, m, shape)?;
+        if let Some(ids) = &ids {
+            for id in ids {
+                if !sh.points.iter().any(|q| q.id == *id) {
+                    return Err(bad(cmd, format!("no point with id {}", id.0)));
+                }
+            }
+        }
+        Ok(json!({ "changed": op(sh, ids.as_deref()) }))
+    })
+}
+
+fn point_cusp(s: &mut Session, p: &Value) -> Result<Value> {
+    point_shape_op(s, p, "roto.point.cusp", "Cusp Roto Points", Shape::cusp_points)
+}
+
+fn point_uncusp(s: &mut Session, p: &Value) -> Result<Value> {
+    point_shape_op(s, p, "roto.point.uncusp", "Uncusp Roto Points", Shape::uncusp_points)
+}
+
+fn point_smooth(s: &mut Session, p: &Value) -> Result<Value> {
+    point_shape_op(s, p, "roto.point.smooth", "Smooth Roto Points", Shape::smooth_points)
+}
+
 // ---------------------------------------------------------------------------
 // Feather
 // ---------------------------------------------------------------------------
@@ -1285,6 +1315,30 @@ pub fn specs() -> Vec<CommandSpec> {
             r##"{"layer":id?,"shape":nodeId,"ids":[pointId…]? (default all),"translate":[x,y]?,"rotate":deg?,"scale":[sx,sy]?,"skew":deg?,"pivot":[x,y]?} (relative, baked into the points)"##,
             has_roto,
             point_transform
+        ),
+        spec!(
+            "roto.point.cusp",
+            "Cusp Roto Points",
+            [],
+            r##"{"layer":id?,"shape":nodeId,"ids":[pointId…]? (default all)} → {changed}. Breaks the link between each point's handles so they move independently; the handles stay where they are"##,
+            has_roto,
+            point_cusp
+        ),
+        spec!(
+            "roto.point.uncusp",
+            "Uncusp Roto Points",
+            [],
+            r##"{"layer":id?,"shape":nodeId,"ids":[pointId…]? (default all)} → {changed}. Links each point's handles into a straight line through it, keeping their lengths (the out handle leads; a lone handle is mirrored)"##,
+            has_roto,
+            point_uncusp
+        ),
+        spec!(
+            "roto.point.smooth",
+            "Smooth Roto Points",
+            [],
+            r##"{"layer":id?,"shape":nodeId,"ids":[pointId…]? (default all)} → {changed}. Builds fresh handles from the neighbouring points so corners become smooth curves"##,
+            has_roto,
+            point_smooth
         ),
         spec!(
             "roto.feather.set_point",

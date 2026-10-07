@@ -26,7 +26,8 @@ sample files.
 | Overlap math | Switchable per roto instance (`Max` default, `Sum`, `Over`). |
 | Nuke exchange | `.nk` script text, both directions. Export can also go to the clipboard; import can also come from the clipboard. |
 | Empty mask | A roto mask with nothing to draw (no shapes, a shape still being drawn, only hidden shapes, an empty group) **reveals everything**, like a fresh Photoshop vector mask; the mask's density and invert still apply to that "everything". Without this, adding a roto mask would hide the whole layer. |
-| Editing view | While the Roto tool is active on a layer, that layer's roto mask is **not applied** to its pixels: the whole image stays visible and the mask is drawn over it as a half-strength red overlay on the hidden areas (view state: `view.rotoEdit`, no history, never saved). "Apply mask while editing" in the options bar applies it live instead. |
+| Mask overlay | **Off by default**: the mask applies to the layer as you draw. The options-bar checkbox **Show mask overlay** switches the Roto tool to an editing view: the layer's roto mask is not applied, the whole image stays visible, and the mask is drawn over it as a half-strength red tint on the hidden areas (view state: `view.rotoEdit`, no history, never saved). |
+| Cusp, uncusp, smooth | Three point operations, as buttons in the options bar and as commands anyone can map a key to (Edit > Keyboard Shortcuts; under Layer > Roto Mask, no default key). **Cusp** breaks the link between a point's handles (they move independently; positions unchanged). **Uncusp** links them in a straight line through the point, keeping their lengths (the out handle leads; a lone handle is mirrored). **Smooth** builds new handles from the neighbouring points (Catmull-Rom). They act on the selected points, or on the whole shape selected in the Roto panel. Engine commands `roto.point.cusp|uncusp|smooth`. |
 
 ## 2. Data model (`crates/doc/src/roto.rs`, L1, pure data)
 

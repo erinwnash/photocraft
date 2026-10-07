@@ -301,7 +301,16 @@
 	Delete Roto Mask	ロトマスクを削除
 	Rasterize Roto Mask	ロトマスクをラスタライズ
 	Roto	ロト
-	Apply mask while editing	編集中にマスクを適用
+	Show mask overlay	マスクオーバーレイを表示
+	Cusp	カスプ
+	Uncusp	カスプ解除
+	Cusp Points	ポイントをカスプにする
+	Uncusp Points	ポイントのカスプを解除
+	Smooth Points	ポイントをスムーズにする
+	Cusp points: handles move independently	ポイントをカスプにする: ハンドルが独立して動きます
+	Uncusp points: link the handles in a straight line	カスプ解除: ハンドルを一直線に連結します
+	Smooth points: build handles from the neighbours	スムーズ: 隣接ポイントからハンドルを生成します
+	Select points (or a shape in the Roto panel) first	先にポイント(またはロトパネルでシェイプ)を選択してください
 	All points	すべてのポイント
 	Backend	バックエンド
 	Bezier	ベジェ

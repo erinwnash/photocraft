@@ -721,6 +721,84 @@ impl RotoMask {
     }
 }
 
+fn len2(v: V2) -> f64 {
+    v.x.hypot(v.y)
+}
+
+impl Shape {
+    /// Whether `ids` (all points when `None`) selects the point.
+    fn picks(ids: Option<&[PointId]>, p: &Point) -> bool {
+        ids.is_none_or(|ids| ids.contains(&p.id))
+    }
+
+    /// Cusp: breaks the link between a point's two handles so they move independently. The
+    /// handles themselves are left where they are. Returns how many points changed.
+    pub fn cusp_points(&mut self, ids: Option<&[PointId]>) -> usize {
+        let mut n = 0;
+        for p in self.points.iter_mut().filter(|p| Self::picks(ids, p)) {
+            p.smooth = false;
+            n += 1;
+        }
+        n
+    }
+
+    /// Uncusp: links a point's handles into a straight line through it. Each keeps its length and
+    /// the out handle leads (the in handle swings to the opposite side); a lone handle is
+    /// mirrored; a point with no handles stays as it is (use [`Shape::smooth_points`] to make
+    /// some). Returns how many points changed.
+    pub fn uncusp_points(&mut self, ids: Option<&[PointId]>) -> usize {
+        let mut n = 0;
+        for p in self.points.iter_mut().filter(|p| Self::picks(ids, p)) {
+            let (out, inn) = (len2(p.tangent_out), len2(p.tangent_in));
+            if out > 1e-12 {
+                let k = inn / out;
+                p.tangent_in = if inn > 1e-12 { V2::new(-p.tangent_out.x * k, -p.tangent_out.y * k) } else { V2::new(-p.tangent_out.x, -p.tangent_out.y) };
+            } else if inn > 1e-12 {
+                p.tangent_out = V2::new(-p.tangent_in.x, -p.tangent_in.y);
+            }
+            p.smooth = true;
+            n += 1;
+        }
+        n
+    }
+
+    /// Smooth: gives a point fresh handles built from its neighbours (a Catmull-Rom spline: a
+    /// sixth of the way from the previous point to the next), so a corner becomes a smooth curve.
+    /// The ends of an open shape point a third of the way toward their one neighbour. The result
+    /// depends only on the positions, so smoothing twice changes nothing. Returns how many
+    /// points were marked smooth.
+    pub fn smooth_points(&mut self, ids: Option<&[PointId]>) -> usize {
+        let n = self.points.len();
+        let pos: Vec<V2> = self.points.iter().map(|p| p.pos).collect();
+        let mut changed = 0;
+        for (k, p) in self.points.iter_mut().enumerate() {
+            if !Self::picks(ids, p) {
+                continue;
+            }
+            changed += 1;
+            p.smooth = true;
+            if n < 2 {
+                continue;
+            }
+            let (prev, next) = if self.closed { (Some((k + n - 1) % n), Some((k + 1) % n)) } else { (k.checked_sub(1), (k + 1 < n).then_some(k + 1)) };
+            let at = |i: Option<usize>| i.and_then(|i| pos.get(i)).copied();
+            let (a, c) = (at(prev), at(next));
+            let (out, inn) = match (a, c) {
+                (Some(a), Some(c)) => {
+                    let t = V2::new((c.x - a.x) / 6.0, (c.y - a.y) / 6.0);
+                    (t, V2::new(-t.x, -t.y))
+                }
+                (None, Some(c)) => (V2::new((c.x - p.pos.x) / 3.0, (c.y - p.pos.y) / 3.0), V2::ZERO),
+                (Some(a), None) => (V2::ZERO, V2::new((a.x - p.pos.x) / 3.0, (a.y - p.pos.y) / 3.0)),
+                (None, None) => (V2::ZERO, V2::ZERO),
+            };
+            p.tangent_out = out;
+            p.tangent_in = inn;
+        }
+        changed
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1043,5 +1121,91 @@ mod tests {
         if let Some(Node::Shape(s)) = m.root.children.first_mut() {
             f(s);
         }
+    }
+
+    fn square_shape() -> Shape {
+        let mut s = Shape::new(NodeId(1), "sq");
+        for (i, (x, y)) in [(0.0, 0.0), (60.0, 0.0), (60.0, 60.0), (0.0, 60.0)].into_iter().enumerate() {
+            s.points.push(Point::corner(PointId(i as u64 + 1), x, y));
+        }
+        s
+    }
+
+    fn v(x: f64, y: f64) -> V2 {
+        V2::new(x, y)
+    }
+
+    #[test]
+    fn cusp_breaks_the_handle_link_and_leaves_the_handles_alone() {
+        let mut s = square_shape();
+        for p in &mut s.points {
+            p.smooth = true;
+            p.tangent_out = v(10.0, 0.0);
+            p.tangent_in = v(-10.0, 0.0);
+        }
+        assert_eq!(s.cusp_points(Some(&[PointId(2), PointId(3)])), 2);
+        assert_eq!(s.points.iter().map(|p| p.smooth).collect::<Vec<_>>(), vec![true, false, false, true]);
+        assert!(s.points.iter().all(|p| p.tangent_out == v(10.0, 0.0) && p.tangent_in == v(-10.0, 0.0)));
+        assert_eq!(s.cusp_points(None), 4, "no ids means every point");
+        assert!(s.points.iter().all(|p| !p.smooth));
+    }
+
+    #[test]
+    fn uncusp_links_the_handles_keeping_each_length_with_the_out_handle_leading() {
+        let mut s = square_shape();
+        s.points[0].tangent_out = v(10.0, 0.0);
+        s.points[0].tangent_in = v(0.0, -5.0); // a corner: handles at right angles
+        s.points[1].tangent_out = v(0.0, 8.0); // only one handle
+        s.points[2].tangent_in = v(-4.0, 3.0); // only the other
+        assert_eq!(s.uncusp_points(None), 4);
+        let near = |a: V2, b: V2| (a.x - b.x).abs() < 1e-9 && (a.y - b.y).abs() < 1e-9;
+        assert!(near(s.points[0].tangent_in, v(-5.0, 0.0)), "opposite the out handle, length 5: {:?}", s.points[0].tangent_in);
+        assert!(near(s.points[0].tangent_out, v(10.0, 0.0)), "the out handle does not move");
+        assert!(near(s.points[1].tangent_in, v(0.0, -8.0)), "a lone out handle is mirrored");
+        assert!(near(s.points[2].tangent_out, v(4.0, -3.0)), "a lone in handle is mirrored");
+        assert_eq!((s.points[3].tangent_in, s.points[3].tangent_out), (V2::ZERO, V2::ZERO), "no handles stays no handles (use Smooth)");
+        assert!(s.points.iter().all(|p| p.smooth));
+    }
+
+    #[test]
+    fn smooth_builds_handles_from_the_neighbours() {
+        let mut s = square_shape();
+        assert_eq!(s.smooth_points(None), 4);
+        // Point 0 sits between (0, 60) and (60, 0): handle = (next - prev) / 6.
+        assert_eq!((s.points[0].tangent_out, s.points[0].tangent_in), (v(10.0, -10.0), v(-10.0, 10.0)));
+        assert_eq!(s.points[2].tangent_out, v(-10.0, 10.0));
+        assert!(s.points.iter().all(|p| p.smooth));
+        // Smoothing is a function of the positions alone, so doing it again changes nothing.
+        let before = s.clone();
+        s.smooth_points(None);
+        assert_eq!(s, before);
+        // A subset: only those points are touched.
+        let mut t = square_shape();
+        assert_eq!(t.smooth_points(Some(&[PointId(1)])), 1);
+        assert!(t.points[0].smooth && !t.points[1].smooth);
+        assert_eq!(t.points[1].tangent_out, V2::ZERO);
+    }
+
+    #[test]
+    fn smooth_on_an_open_shape_points_the_end_handles_along_the_only_neighbour() {
+        let mut s = square_shape();
+        s.closed = false;
+        s.smooth_points(None);
+        assert_eq!((s.points[0].tangent_out, s.points[0].tangent_in), (v(20.0, 0.0), V2::ZERO), "first point: toward the next, a third of the way");
+        assert_eq!((s.points[3].tangent_in, s.points[3].tangent_out), (v(20.0, 0.0), V2::ZERO), "last point (0, 60): toward the previous (60, 60)");
+        assert_eq!(s.points[1].tangent_out, v(10.0, 10.0), "inner points use both neighbours");
+    }
+
+    #[test]
+    fn point_operations_ignore_what_does_not_exist_and_never_panic() {
+        let mut empty = Shape::new(NodeId(1), "e");
+        assert_eq!((empty.cusp_points(None), empty.uncusp_points(None), empty.smooth_points(None)), (0, 0, 0));
+        let mut one = Shape::new(NodeId(2), "o");
+        one.points.push(Point::corner(PointId(1), 5.0, 5.0));
+        assert_eq!(one.smooth_points(None), 1, "the point is marked smooth");
+        assert_eq!((one.points[0].tangent_in, one.points[0].tangent_out), (V2::ZERO, V2::ZERO), "but a lone point has no neighbours to build handles from");
+        let mut s = square_shape();
+        assert_eq!(s.smooth_points(Some(&[PointId(99)])), 0);
+        assert_eq!(s.cusp_points(Some(&[])), 0);
     }
 }

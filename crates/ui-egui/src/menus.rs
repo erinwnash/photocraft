@@ -36,6 +36,9 @@ pub const UI_COMMANDS: &[(&str, &str, &[&str], Option<&str>)] = &[
     ("view.fitOnScreen", "Fit on Screen", &["View"], Some("Cmd+0")),
     ("view.actualPixels", "100%", &["View"], Some("Cmd+1")),
     ("window.newWindowForDocument", "New Window for Document", &["Window", "Arrange"], None),
+    ("roto.cuspPoints", "Cusp Points", &["Layer", "Roto Mask"], None),
+    ("roto.uncuspPoints", "Uncusp Points", &["Layer", "Roto Mask"], None),
+    ("roto.smoothPoints", "Smooth Points", &["Layer", "Roto Mask"], None),
     ("window.toggle.layers", "Layers", &["Window"], Some("F7")),
     ("window.toggle.history", "History", &["Window"], None),
     ("window.toggle.properties", "Properties", &["Window"], None),
@@ -118,6 +121,10 @@ pub(crate) fn invoke_unguarded(app: &mut PhotocraftApp, ctx: &egui::Context, id:
     }
     if id == "view.proofSetup.custom" {
         return Ok(json!({"dialog": crate::filter_dialog::open(app, "view.proofSetup")}));
+    }
+    // Layer › Roto Mask › Cusp, Uncusp and Smooth Points (act on the selected points).
+    if let Some(r) = crate::roto_ui::menu(app, id, &params) {
+        return r;
     }
     // Image › Analysis tools/dialogs, Measurement Log and Notes panels, File › Import › Notes.
     if let Some(r) = crate::analysis_ui::menu(app, id, &params) {
@@ -449,6 +456,9 @@ pub fn is_enabled(app: &PhotocraftApp, id: &str) -> bool {
         return e;
     }
     if let Some(e) = crate::plugin_ui::is_enabled(app, id) {
+        return e;
+    }
+    if let Some(e) = crate::roto_ui::is_enabled(app, id) {
         return e;
     }
     match id {

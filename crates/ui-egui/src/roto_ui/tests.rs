@@ -1,4 +1,4 @@
-use photocraft_doc::roto::Node;
+use photocraft_doc::roto::{Node, V2};
 use photocraft_vector as vector;
 use serde_json::json;
 
@@ -320,34 +320,37 @@ fn frame(a: &mut PhotocraftApp, ctx: &egui::Context) {
 }
 
 #[test]
-fn the_editing_view_follows_the_tool_the_layer_and_the_apply_setting() {
+fn the_mask_overlay_is_off_by_default_and_follows_the_tool_and_the_layer_when_on() {
     let _g = VIEW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     vector::roto::set_editing_layer(None);
     let ctx = egui::Context::default();
     let mut a = app();
     let layer = a.session.active().unwrap().active_layer.unwrap();
-    // No roto mask yet: nothing to edit, the layer is untouched.
-    frame(&mut a, &ctx);
-    assert_eq!(editing(), None);
-    // Drawing the first shape creates the mask; from the next frame the image shows through.
+    assert!(!a.ui.roto.matte_overlay, "off by default");
+    // Drawing the first shape with the overlay off: the mask applies as you go, no editing view.
     a.ui.roto.mode = RotoMode::Rectangle;
     drag(&mut a, [40.0, 40.0], [120.0, 100.0], Modifiers::NONE);
     frame(&mut a, &ctx);
-    assert_eq!(editing(), Some(layer), "image stays visible while drawing");
-    assert!(a.ui.roto.matte.tex.is_some(), "the mask is drawn over it");
-    // Another tool: the mask applies to the layer again.
+    assert_eq!(editing(), None);
+    assert!(a.ui.roto.matte.tex.is_none(), "no overlay is built");
+    // Tick "Show mask overlay": the image shows through, with the mask drawn over it.
+    a.ui.roto.matte_overlay = true;
+    frame(&mut a, &ctx);
+    assert_eq!(editing(), Some(layer));
+    assert!(a.ui.roto.matte.tex.is_some());
+    // Another tool: the mask applies to the layer again, whatever the checkbox says.
     a.ui.tool = Tool::Brush;
     frame(&mut a, &ctx);
     assert_eq!(editing(), None);
     assert!(a.ui.roto.matte.tex.is_none(), "no overlay texture is kept around");
-    // Back to Roto; choosing "apply while editing" turns the view off.
     a.ui.tool = Tool::Roto;
     frame(&mut a, &ctx);
     assert_eq!(editing(), Some(layer));
-    a.ui.roto.apply_while_editing = true;
+    // Unticking it applies the mask again.
+    a.ui.roto.matte_overlay = false;
     frame(&mut a, &ctx);
-    assert_eq!(editing(), None, "the user asked to see the mask applied live");
-    a.ui.roto.apply_while_editing = false;
+    assert_eq!(editing(), None);
+    a.ui.roto.matte_overlay = true;
     // A disabled mask is not applied, so there is nothing to see through.
     a.run("roto.instance.set", json!({"enabled": false})).unwrap();
     frame(&mut a, &ctx);
@@ -355,7 +358,7 @@ fn the_editing_view_follows_the_tool_the_layer_and_the_apply_setting() {
     a.run("roto.instance.set", json!({"enabled": true})).unwrap();
     frame(&mut a, &ctx);
     assert_eq!(editing(), Some(layer));
-    // The layer losing its mask (undo) or going away must not leave the view stuck on or loop.
+    // The layer losing its mask must not leave the view stuck on or loop.
     a.run("layer.roto.delete", json!({})).unwrap();
     frame(&mut a, &ctx);
     frame(&mut a, &ctx);
@@ -369,6 +372,7 @@ fn switching_documents_ends_the_editing_view_but_never_touches_a_view_this_app_d
     vector::roto::set_editing_layer(None);
     let ctx = egui::Context::default();
     let mut a = app();
+    a.ui.roto.matte_overlay = true;
     a.ui.roto.mode = RotoMode::Rectangle;
     drag(&mut a, [40.0, 40.0], [120.0, 100.0], Modifiers::NONE);
     frame(&mut a, &ctx);
@@ -437,4 +441,117 @@ fn a_reduced_matte_scales_blur_and_root_moves_so_it_matches_the_full_size_mask()
         }
     }
     assert!(worst < 0.12, "preview and full-size masks differ by {worst}");
+}
+
+// ---------------------------------------------------------------------------------------------
+// Cusp, uncusp and smooth
+
+const POINT_COMMANDS: [&str; 3] = ["roto.cuspPoints", "roto.uncuspPoints", "roto.smoothPoints"];
+
+fn handles_of(a: &PhotocraftApp, shape: usize, point: usize) -> (V2, V2, bool) {
+    let p = shapes(a)[shape].points[point];
+    (p.tangent_in, p.tangent_out, p.smooth)
+}
+
+#[test]
+fn point_commands_act_on_the_selected_points_through_the_menu() {
+    let ctx = egui::Context::default();
+    let mut a = with_rect();
+    // Nothing selected: disabled, and invoking says why without touching anything.
+    let before = mask(&a);
+    for id in POINT_COMMANDS {
+        assert!(!crate::menus::is_enabled(&a, id), "{id}");
+        assert!(crate::menus::invoke(&mut a, &ctx, id, json!({})).is_err(), "{id}");
+    }
+    assert_eq!(mask(&a), before);
+
+    // Two points selected: Smooth builds their handles and leaves the others alone.
+    click(&mut a, [20.0, 20.0], Modifiers::NONE);
+    click(&mut a, [100.0, 20.0], Modifiers::SHIFT);
+    assert_eq!(a.ui.roto.sel.points.len(), 2);
+    for id in POINT_COMMANDS {
+        assert!(crate::menus::is_enabled(&a, id), "{id}");
+    }
+    crate::menus::invoke(&mut a, &ctx, "roto.smoothPoints", json!({})).unwrap();
+    let (tin, tout, smooth) = handles_of(&a, 0, 0);
+    assert!(smooth && tout != V2::ZERO && tin == V2::new(-tout.x, -tout.y), "{tin:?} {tout:?}");
+    assert!(handles_of(&a, 0, 1).2);
+    assert_eq!(handles_of(&a, 0, 2), (V2::ZERO, V2::ZERO, false), "an unselected point is untouched");
+
+    // Cusp leaves the handles where they are and breaks the link; Uncusp links them again.
+    crate::menus::invoke(&mut a, &ctx, "roto.cuspPoints", json!({})).unwrap();
+    assert_eq!(handles_of(&a, 0, 0), (tin, tout, false));
+    crate::menus::invoke(&mut a, &ctx, "roto.uncuspPoints", json!({})).unwrap();
+    assert_eq!(handles_of(&a, 0, 0), (tin, tout, true), "already collinear: linking changes nothing but the flag");
+
+    // With no points selected, a shape selected in the Roto panel is acted on as a whole.
+    a.ui.roto.sel.clear();
+    a.ui.roto.nodes = vec![shapes(&a)[0].id];
+    assert!(crate::menus::is_enabled(&a, "roto.smoothPoints"));
+    crate::menus::invoke(&mut a, &ctx, "roto.smoothPoints", json!({})).unwrap();
+    assert!(shapes(&a)[0].points.iter().all(|p| p.smooth && p.tangent_out != V2::ZERO));
+    // Each press was one undo step.
+    undo(&mut a);
+    assert!(!handles_of(&a, 0, 2).2);
+}
+
+#[test]
+fn the_point_commands_are_menu_items_users_can_map_keys_to() {
+    let a = app();
+    let items = crate::menus::menu_items(&a);
+    for (id, label) in [("roto.cuspPoints", "Cusp Points"), ("roto.uncuspPoints", "Uncusp Points"), ("roto.smoothPoints", "Smooth Points")] {
+        let item = items.iter().find(|i| i.id == id).unwrap_or_else(|| panic!("{id} is a menu item"));
+        assert_eq!((item.label.as_str(), item.path.as_slice()), (label, &["Layer".to_string(), "Roto Mask".to_string()][..]));
+        assert_eq!(item.shortcut, None, "no default key: the user assigns one");
+        assert!(crate::menus::is_live(id));
+        assert!(crate::roto_ui::handles(id));
+    }
+}
+
+#[test]
+fn a_hotkey_the_user_assigns_runs_the_point_command() {
+    let ctx = egui::Context::default();
+    let mut a = with_rect();
+    click(&mut a, [20.0, 20.0], Modifiers::NONE);
+    // Unassigned, the key does nothing.
+    let press = |a: &mut PhotocraftApp| {
+        let mods = Modifiers { command: true, alt: true, shift: true, ctrl: false, mac_cmd: false };
+        let raw = egui::RawInput {
+            events: vec![
+                egui::Event::ModifiersChanged(mods),
+                egui::Event::Key { key: egui::Key::Num7, physical_key: None, pressed: true, repeat: false, modifiers: mods },
+            ],
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(raw, |ui| crate::shortcuts::handle(a, ui.ctx()));
+        out.textures_delta.clear();
+    };
+    press(&mut a);
+    assert!(!handles_of(&a, 0, 0).2, "no binding yet");
+    // Assign Cmd+Alt+Shift+7 to Smooth Points (what Edit > Keyboard Shortcuts stores).
+    a.session.prefs.edit(|p| p.shortcuts.insert("roto.smoothPoints".into(), "Cmd+Alt+Shift+7".into()));
+    assert!(crate::shortcut_dispatch::bindings(&a).iter().any(|(id, _)| id == "roto.smoothPoints"));
+    press(&mut a);
+    assert!(handles_of(&a, 0, 0).2, "the mapped key smoothed the selected point");
+    assert_ne!(handles_of(&a, 0, 0).1, V2::ZERO);
+    // The tooltip on the button names the key.
+    assert!(crate::shortcuts::tip_label(&a, "Smooth", "roto.smoothPoints").contains(&crate::shortcuts::pretty("Cmd+Alt+Shift+7")));
+}
+
+#[test]
+fn the_options_bar_has_the_point_buttons_and_the_overlay_checkbox_unticked() {
+    let ctx = egui::Context::default();
+    PhotocraftApp::setup_context(&ctx, Default::default());
+    let mut a = with_rect();
+    click(&mut a, [20.0, 20.0], Modifiers::NONE);
+    for _ in 0..3 {
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            assert!(options_bar(&mut a, ui, Tool::Roto));
+        });
+        out.textures_delta.clear();
+    }
+    assert!(!a.ui.roto.matte_overlay);
+    assert_eq!(point_texts("roto.cuspPoints").0, "Cusp");
+    assert_eq!(point_texts("roto.uncuspPoints").0, "Uncusp");
+    assert_eq!(point_texts("roto.smoothPoints").0, "Smooth");
 }

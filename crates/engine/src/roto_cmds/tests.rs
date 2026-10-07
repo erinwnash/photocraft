@@ -567,3 +567,67 @@ fn view_roto_edit_is_view_state_with_no_history_and_keeps_a_clean_document_clean
     assert_eq!(editing_layer(), None);
     assert!(plain.execute("view.rotoEdit", json!({"on": "yes"})).is_err());
 }
+
+#[test]
+fn cusp_uncusp_and_smooth_commands_edit_the_points_one_undo_step_each() {
+    let mut s = with_roto_layer(100, 100);
+    let id = add_rect(&mut s, 20.0, 20.0, 40.0, 40.0);
+    let ids = point_ids(&shape(&s, id));
+    let area = |s: &Session| -> f64 { vector::roto::roto_values(&mask(s), Rect::new(0, 0, 100, 100)).iter().map(|v| f64::from(*v)).sum() };
+    let square = area(&s);
+
+    // Smooth: corners become curves. A smooth curve through four corners bows outward past the
+    // square, so the shape is no longer the square (here about a third bigger).
+    let r = s.execute("roto.point.smooth", json!({"shape": id})).unwrap();
+    assert_eq!(r["changed"], 4);
+    let sh = shape(&s, id);
+    assert!(sh.points.iter().all(|p| p.smooth && len(p.tangent_out) > 1.0 && (len(p.tangent_in) - len(p.tangent_out)).abs() < 1e-9));
+    let rounded = area(&s);
+    assert!((rounded - square).abs() > 20.0 && rounded < square * 1.6, "{rounded} vs {square}");
+
+    // Cusp one point: its handles stay, the link is gone; the others are untouched.
+    let handles = sh.points[0].tangent_out;
+    s.execute("roto.point.cusp", json!({"shape": id, "ids": [ids[0]]})).unwrap();
+    let sh = shape(&s, id);
+    assert!(!sh.points[0].smooth && sh.points[1].smooth);
+    assert_eq!(sh.points[0].tangent_out, handles);
+    // The handles are now independent: bend one, the other stays.
+    s.execute("roto.point.set", json!({"shape": id, "id": ids[0], "out": [5, 25]})).unwrap();
+    let sh = shape(&s, id);
+    assert_eq!(sh.points[0].tangent_out, V2::new(5.0, 25.0));
+    assert!(len(sh.points[0].tangent_in) > 1.0 && sh.points[0].tangent_in != V2::new(-5.0, -25.0));
+
+    // Uncusp: linked again, in-handle opposite the out-handle, keeping its length.
+    let in_len = len(sh.points[0].tangent_in);
+    s.execute("roto.point.uncusp", json!({"shape": id, "ids": [ids[0]]})).unwrap();
+    let p = shape(&s, id).points[0];
+    assert!(p.smooth);
+    assert!((len(p.tangent_in) - in_len).abs() < 1e-9);
+    let cross = p.tangent_in.x * p.tangent_out.y - p.tangent_in.y * p.tangent_out.x;
+    assert!(cross.abs() < 1e-6 && p.tangent_in.x * p.tangent_out.x + p.tangent_in.y * p.tangent_out.y < 0.0, "opposite and collinear");
+
+    // Each command was one undo step.
+    undo(&mut s);
+    assert!(!shape(&s, id).points[0].smooth, "undo of uncusp: still cusped");
+    undo(&mut s);
+    undo(&mut s);
+    assert!(shape(&s, id).points[0].smooth, "undo of cusp (after undoing the handle edit)");
+    undo(&mut s);
+    assert!(shape(&s, id).points.iter().all(|p| p.tangent_out == V2::ZERO && !p.smooth), "undo of smooth: the square again");
+}
+
+#[test]
+fn point_shape_commands_reject_bad_ids_without_touching_anything() {
+    let mut s = with_roto_layer(100, 100);
+    let id = add_rect(&mut s, 20.0, 20.0, 40.0, 40.0);
+    let before = mask(&s);
+    let rev = revision(&s);
+    for cmd in ["roto.point.cusp", "roto.point.uncusp", "roto.point.smooth"] {
+        assert!(s.execute(cmd, json!({"shape": id, "ids": [424242]})).is_err(), "{cmd}: unknown point");
+        assert!(s.execute(cmd, json!({"shape": 777})).is_err(), "{cmd}: unknown shape");
+        assert!(s.execute(cmd, json!({"shape": id, "ids": "all"})).is_err(), "{cmd}: ids must be a list");
+        assert!(s.execute(cmd, json!({})).is_err(), "{cmd}: a shape is required");
+    }
+    assert_eq!(mask(&s), before);
+    assert_eq!(revision(&s), rev);
+}

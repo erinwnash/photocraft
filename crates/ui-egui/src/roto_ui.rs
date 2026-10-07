@@ -130,10 +130,11 @@ pub struct RotoUi {
     pub mode: RotoMode,
     /// Hide the feather outline and handles on the canvas.
     pub hide_feather: bool,
-    /// Apply the mask to the layer live while editing. Off (the default) the whole image stays
-    /// visible with the mask drawn over it in red, so there is something to trace.
+    /// Show the mask as a red overlay while editing: the layer is then not masked, so the whole
+    /// image stays visible to trace, with the hidden areas tinted. Off by default, the mask is
+    /// applied to the layer as you draw.
     #[serde(default)]
-    pub apply_while_editing: bool,
+    pub matte_overlay: bool,
     #[serde(skip)]
     matte: Matte,
     /// The layer this app put in the editing view. The view is process-wide state, so the app only
@@ -225,6 +226,61 @@ fn prune(app: &mut PhotocraftApp) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Cusp, uncusp and smooth
+
+/// The point commands: shell command id (menus and hotkeys: assign keys in Edit > Keyboard
+/// Shortcuts) and the engine command it runs.
+const POINT_OPS: [(&str, &str); 3] =
+    [("roto.cuspPoints", "roto.point.cusp"), ("roto.uncuspPoints", "roto.point.uncusp"), ("roto.smoothPoints", "roto.point.smooth")];
+
+/// The button label and tooltip of a point command.
+fn point_texts(id: &str) -> (&'static str, &'static str) {
+    match id {
+        "roto.cuspPoints" => (tl!("Cusp"), tl!("Cusp points: handles move independently")),
+        "roto.uncuspPoints" => (tl!("Uncusp"), tl!("Uncusp points: link the handles in a straight line")),
+        _ => (tl!("Smooth"), tl!("Smooth points: build handles from the neighbours")),
+    }
+}
+
+/// Is `id` one of the point commands?
+pub fn handles(id: &str) -> bool {
+    POINT_OPS.iter().any(|o| o.0 == id)
+}
+
+/// What the point commands act on: the selected points, else every point of the shape selected in
+/// the Roto panel. `None` when nothing suitable is selected.
+fn point_targets(app: &PhotocraftApp) -> Option<(NodeId, Option<Vec<PointId>>)> {
+    let (_, m) = active(app)?;
+    let sel = &app.ui.roto.sel;
+    if let Some(shape) = sel.shape.filter(|_| !sel.points.is_empty()) {
+        return Some((shape, Some(sel.points.clone())));
+    }
+    let shape = app.ui.roto.nodes.first().copied().filter(|id| matches!(m.find(*id), Some(Node::Shape(_))))?;
+    Some((shape, None))
+}
+
+/// Whether a point command can run now (`None` for other commands).
+pub fn is_enabled(app: &PhotocraftApp, id: &str) -> Option<bool> {
+    handles(id).then(|| point_targets(app).is_some())
+}
+
+/// Runs the engine command behind a point command on the current selection.
+fn point_op(app: &mut PhotocraftApp, engine_cmd: &str) -> Result<Value, String> {
+    let (shape, ids) = point_targets(app).ok_or_else(|| tl!("Select points (or a shape in the Roto panel) first").to_string())?;
+    let mut params = json!({"shape": shape.0});
+    if let Some(ids) = ids {
+        params["ids"] = json!(ids.iter().map(|p| p.0).collect::<Vec<_>>());
+    }
+    app.run(engine_cmd, params)
+}
+
+/// Menu and hotkey entry for the point commands (`None` for other commands).
+pub fn menu(app: &mut PhotocraftApp, id: &str, _params: &Value) -> Option<Result<Value, String>> {
+    let (_, cmd) = POINT_OPS.iter().find(|o| o.0 == id)?;
+    Some(point_op(app, cmd))
+}
+
+// ---------------------------------------------------------------------------------------------
 // The editing view
 
 /// Longest side of the matte preview, idle and while a gesture is dragging (a reduced mask is
@@ -271,11 +327,11 @@ pub(crate) fn matte_image(mask: &RotoMask, w: u32, h: u32, max_side: u32) -> ([u
 }
 
 /// Keeps the editing view in step with the tool: while the Roto tool is active on a layer that has
-/// an enabled roto mask (and the user has not asked to see it applied live), that mask is not
-/// applied to the layer, so the whole image stays visible, and it is drawn as a red overlay
-/// instead. Called every frame, before the canvas draws.
+/// an enabled roto mask and the user has switched the mask overlay on, that mask is not applied to
+/// the layer, so the whole image stays visible, and it is drawn as a red overlay instead. Called
+/// every frame, before the canvas draws.
 pub fn sync_view(app: &mut PhotocraftApp, ctx: &egui::Context) {
-    let wanted = (app.ui.tool == Tool::Roto && !app.ui.roto.apply_while_editing).then(|| active(app).filter(|(_, m)| m.enabled).map(|(id, _)| id)).flatten();
+    let wanted = (app.ui.tool == Tool::Roto && app.ui.roto.matte_overlay).then(|| active(app).filter(|(_, m)| m.enabled).map(|(id, _)| id)).flatten();
     let owned = app.ui.roto.view_layer;
     if wanted != owned {
         // End the view this app started (the layer may be gone or in another document: then the
@@ -707,12 +763,24 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
         app.ui.roto.gesture = None;
     }
     crate::widgets::vline(ui, 22.0);
+    let can_edit_points = point_targets(app).is_some();
+    for (id, cmd) in POINT_OPS {
+        let (label, tip) = point_texts(id);
+        // The tooltip names the key the user mapped to the command, if any.
+        let tip = crate::shortcuts::tip_label(app, tip, id);
+        let clicked = ui.add_enabled_ui(can_edit_points, |ui| crate::widgets::secondary_button(ui, label, 56.0).on_hover_text(tip).clicked()).inner;
+        if clicked && let Err(e) = point_op(app, cmd) {
+            app.ui.status = e;
+            app.ui.status_error = true;
+        }
+    }
+    crate::widgets::vline(ui, 22.0);
     let mut show = !app.ui.roto.hide_feather;
     if crate::widgets::checkbox(ui, &mut show, tl!("Show feather")).changed() {
         app.ui.roto.hide_feather = !show;
     }
     crate::widgets::vline(ui, 22.0);
-    crate::widgets::checkbox(ui, &mut app.ui.roto.apply_while_editing, tl!("Apply mask while editing"));
+    crate::widgets::checkbox(ui, &mut app.ui.roto.matte_overlay, tl!("Show mask overlay"));
     crate::widgets::vline(ui, 22.0);
     let hint = match app.ui.roto.mode {
         RotoMode::Select => tl!("Drag points and handles · ⌘-drag a point to feather · ⌘⌥-click the outline to add a point · Delete removes"),
