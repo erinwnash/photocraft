@@ -33,6 +33,7 @@ fn key(layer: &Layer, canvas: Rect) -> u64 {
     layer.id.0.hash(&mut h);
     (canvas.x0, canvas.y0, canvas.x1, canvas.y1).hash(&mut h);
     format!("{:?}", layer.vector_mask).hash(&mut h);
+    format!("{:?}", layer.roto_mask).hash(&mut h);
     if let Some(m) = &layer.mask {
         (m.enabled, m.density.to_bits(), m.feather.to_bits()).hash(&mut h);
         format!("{:?}", m.surface.default_pixel()).hash(&mut h);
@@ -54,9 +55,12 @@ const FEATHER_SIGMA: f32 = 1.0;
 /// Photoshop's feather tops out at 1000 px.
 const MAX_FEATHER_SIGMA: f32 = 1000.0 * FEATHER_SIGMA;
 
-/// Whether `layer` has an enabled mask with a feather (rendered through [`combined_mask`]).
+/// Whether `layer` has an enabled mask that must be rendered canvas-wide through
+/// [`combined_mask`] rather than tile by tile: a feathered pixel or vector mask, or any roto
+/// mask (its feather band and blur reach across tiles).
 pub fn has_feather(layer: &Layer) -> bool {
-    layer.mask.as_ref().is_some_and(|m| m.enabled && feather_sigma(m.feather) > 0.0)
+    layer.roto_mask.as_ref().is_some_and(|r| r.enabled)
+        || layer.mask.as_ref().is_some_and(|m| m.enabled && feather_sigma(m.feather) > 0.0)
         || layer.vector_mask.as_ref().is_some_and(|v| v.enabled && feather_sigma(v.feather) > 0.0)
 }
 
@@ -99,8 +103,9 @@ fn gaussian(v: &mut [f32], w: usize, h: usize, sigma: f32) {
 pub fn combined_mask(layer: &Layer, canvas: Rect) -> Option<Surface> {
     let vm = layer.vector_mask.as_ref().filter(|v| v.enabled);
     let pixel = layer.mask.as_ref().filter(|m| m.enabled);
+    let roto = layer.roto_mask.as_ref().filter(|r| r.enabled);
     let (sv, sp) = (vm.map_or(0.0, |v| feather_sigma(v.feather)), pixel.map_or(0.0, |m| feather_sigma(m.feather)));
-    if vm.is_none() && sp <= 0.0 {
+    if vm.is_none() && roto.is_none() && sp <= 0.0 {
         return None;
     }
     let k = key(layer, canvas);
@@ -115,7 +120,8 @@ pub fn combined_mask(layer: &Layer, canvas: Rect) -> Option<Surface> {
     }
     // Far outside the path the vector mask is constant.
     let far = Rect::from_xywh(canvas.x0 - 1_000_000, canvas.y0 - 1_000_000, 1, 1);
-    let v_out = vm.map_or(1.0, |vm| photocraft_vector::vector_mask_values(vm, far)[0]);
+    let v_out = vm.map_or(1.0, |vm| photocraft_vector::vector_mask_values(vm, far)[0])
+        * roto.map_or(1.0, |r| photocraft_vector::roto::roto_values(r, far).first().copied().unwrap_or(1.0));
     let p_def = pixel.map_or(1.0, |m| {
         let d = m.surface.default_pixel().first().copied().unwrap_or(1.0);
         1.0 - m.density * (1.0 - d)
@@ -131,6 +137,11 @@ pub fn combined_mask(layer: &Layer, canvas: Rect) -> Option<Surface> {
         Some((x0, y0, x1, y1)) => grow(Rect::new(x0.floor() as i32 - 2, y0.floor() as i32 - 2, x1.ceil() as i32 + 2, y1.ceil() as i32 + 2), sv),
         None => Rect::EMPTY,
     };
+    // A roto mask's extent is not known without evaluating it (feather, blur, inversion): cover
+    // the canvas.
+    if roto.is_some() {
+        area = canvas;
+    }
     if let Some(m) = pixel
         && v_out > 0.0
     {
@@ -152,6 +163,11 @@ pub fn combined_mask(layer: &Layer, canvas: Rect) -> Option<Surface> {
             None => vec![1.0; w * h],
         };
         gaussian(&mut v, w, h, sv);
+        if let Some(r) = roto {
+            for (a, b) in v.iter_mut().zip(photocraft_vector::roto::roto_values(r, area)) {
+                *a *= b;
+            }
+        }
         if let Some(m) = pixel {
             let mut pm = Vec::new();
             m.values_into(area, &mut pm);
@@ -200,5 +216,33 @@ mod tests {
         assert!(s.tiles().zip(again.tiles()).all(|(a, b)| Arc::ptr_eq(a.1, b.1)));
         l.vector_mask = None;
         assert!(combined_mask(&l, canvas).is_none());
+    }
+
+    #[test]
+    fn roto_mask_is_part_of_the_combined_mask() {
+        use photocraft_doc::RotoMask;
+        use photocraft_doc::roto::{Node, NodeId, Point, PointId, Shape};
+        let mut l = Layer::raster("l", PixelFormat::RGBA8);
+        let mut s = Shape::new(NodeId(1), "s");
+        for (i, (x, y)) in [(5.0, 5.0), (30.0, 5.0), (30.0, 28.0), (5.0, 28.0)].into_iter().enumerate() {
+            s.points.push(Point::corner(PointId(i as u64 + 1), x, y));
+        }
+        let mut m = RotoMask::default();
+        m.root.children.push(Node::Shape(s));
+        l.roto_mask = Some(m);
+        let canvas = Rect::new(0, 0, 40, 32);
+        assert!(has_feather(&l), "roto masks render canvas-wide");
+        let surface = combined_mask(&l, canvas).expect("roto mask yields a surface");
+        let mut got = Vec::new();
+        surface.read_region_into(canvas, &mut got);
+        let want = photocraft_vector::roto::roto_values(l.roto_mask.as_ref().unwrap(), canvas);
+        assert!(got.iter().zip(&want).all(|(a, b)| (a - b).abs() < 1e-6));
+        // Inverted: the mask is 1 far outside the shape, and the surface default says so.
+        l.roto_mask.as_mut().unwrap().invert = true;
+        let inv = combined_mask(&l, canvas).expect("surface");
+        assert!((inv.default_pixel()[0] - 1.0).abs() < 1e-6);
+        l.roto_mask.as_mut().unwrap().enabled = false;
+        assert!(combined_mask(&l, canvas).is_none());
+        assert!(!has_feather(&l));
     }
 }

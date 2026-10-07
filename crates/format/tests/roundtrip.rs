@@ -365,8 +365,7 @@ fn roto_mask_roundtrips_and_defaults_when_absent() {
         shape.points.push(p);
     }
     shape.opacity = 0.5;
-    let mut mask = RotoMask::default();
-    mask.density = 0.75;
+    let mut mask = RotoMask { density: 0.75, ..Default::default() };
     mask.root.children.push(Node::Shape(shape));
     doc.layers[0].roto_mask = Some(mask.clone());
     let bytes = save_to_bytes(&doc, &SaveOptions::default()).unwrap();

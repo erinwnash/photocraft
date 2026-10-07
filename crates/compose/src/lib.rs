@@ -921,6 +921,7 @@ pub fn occludes_below(layer: &Layer, mode: photocraft_color::ColorMode) -> bool 
         && layer.fill_opacity >= 1.0
         && !layer.mask.as_ref().is_some_and(|m| m.enabled)
         && !layer.vector_mask.as_ref().is_some_and(|m| m.enabled)
+        && !layer.roto_mask.as_ref().is_some_and(|m| m.enabled)
         && !effects::has_effects(layer)
         && layer.excluded_channels == 0
         && !blend_if_active(layer, mode)
@@ -1061,7 +1062,7 @@ fn composite_layer_plain(layer: &Layer, clipped: &[Layer], backdrop: &mut Buffer
         && layer.fill_opacity >= 1.0
         && !effects::has_effects(layer)
     {
-        let needs_mix = opacity < 1.0 || layer.mask.is_some() || layer.vector_mask.is_some();
+        let needs_mix = opacity < 1.0 || layer.mask.is_some() || layer.vector_mask.is_some() || layer.roto_mask.is_some();
         let has_clipped = clipped.iter().any(|c| c.visible);
         // Children can draw directly unless mixing or clipping needs the original backdrop.
         let before = (needs_mix || has_clipped).then(|| backdrop.clone());
@@ -1253,6 +1254,9 @@ fn layer_identity(layer: &Layer, h: &mut std::collections::hash_map::DefaultHash
     }
     if let Some(vm) = &layer.vector_mask {
         format!("{vm:?}").hash(h);
+    }
+    if let Some(rm) = &layer.roto_mask {
+        format!("{rm:?}").hash(h);
     }
     format!("{:?}", layer.effects).hash(h);
     h.write_u8(0xfe);

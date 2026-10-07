@@ -83,7 +83,9 @@ pub fn proxy_document(doc: &Document, k: u32) -> Document {
 /// Whether a proxy composite is a faithful reduction of `doc`: layer effects (whose sizes are in
 /// document pixels) and vector masks (paths in document coordinates) would not scale with it.
 pub fn proxy_faithful(doc: &Document) -> bool {
-    doc.walk().iter().all(|(_, _, l)| !crate::effects::has_effects(l) && l.vector_mask.as_ref().is_none_or(|v| !v.enabled))
+    doc.walk().iter().all(|(_, _, l)| {
+        !crate::effects::has_effects(l) && l.vector_mask.as_ref().is_none_or(|v| !v.enabled) && l.roto_mask.as_ref().is_none_or(|r| !r.enabled)
+    })
 }
 
 #[cfg(test)]

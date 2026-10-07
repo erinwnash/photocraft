@@ -709,6 +709,56 @@ fn vector_mask_combines_with_pixel_mask() {
     assert!(close4(px(&d, 6, 1), [1.0; 4]));
 }
 
+fn roto_square(x0: f64, y0: f64, x1: f64, y1: f64) -> photocraft_doc::RotoMask {
+    use photocraft_doc::roto::{Node, NodeId, Point, PointId, Shape};
+    let mut s = Shape::new(NodeId(1), "s");
+    for (i, (x, y)) in [(x0, y0), (x1, y0), (x1, y1), (x0, y1)].into_iter().enumerate() {
+        s.points.push(Point::corner(PointId(i as u64 + 1), x, y));
+    }
+    let mut m = photocraft_doc::RotoMask::default();
+    m.root.children.push(Node::Shape(s));
+    m
+}
+
+#[test]
+fn roto_mask_masks_a_layer_combines_with_pixel_mask_and_is_tile_independent() {
+    use photocraft_doc::roto::V2;
+    let mut d = doc_white(16, 16);
+    let mut l = solid_layer("k", Rect::new(0, 0, 16, 16), [0.0, 0.0, 0.0, 1.0]);
+    l.roto_mask = Some(roto_square(4.0, 4.0, 12.0, 12.0));
+    d.layers.push(l);
+    let top = d.layers.len() - 1;
+    assert!(close4(px(&d, 8, 8), [0.0, 0.0, 0.0, 1.0]), "inside the roto shape the layer shows");
+    assert!(close4(px(&d, 1, 1), [1.0; 4]), "outside it the backdrop shows");
+    // A pixel mask hiding rows 0..8 multiplies with the roto mask.
+    let mut m = LayerMask::reveal_all();
+    m.surface.fill_rect(Rect::new(0, 0, 16, 8), &[0.0]);
+    d.layers[top].mask = Some(m);
+    assert!(close4(px(&d, 8, 6), [1.0; 4]));
+    assert!(close4(px(&d, 8, 10), [0.0, 0.0, 0.0, 1.0]));
+    d.layers[top].mask = None;
+    // Density and disabling.
+    d.layers[top].roto_mask.as_mut().unwrap().density = 0.5;
+    assert!(close4(px(&d, 8, 8), [0.5, 0.5, 0.5, 1.0]));
+    d.layers[top].roto_mask.as_mut().unwrap().enabled = false;
+    assert!(close4(px(&d, 8, 8), [0.0, 0.0, 0.0, 1.0]), "a disabled roto mask hides nothing");
+    d.layers[top].roto_mask.as_mut().unwrap().enabled = true;
+    d.layers[top].roto_mask.as_mut().unwrap().density = 1.0;
+    // A feather and a tiled render: soft edge, and the same pixels whatever the tile size.
+    if let photocraft_doc::roto::Node::Shape(s) = &mut d.layers[top].roto_mask.as_mut().unwrap().root.children[0] {
+        for p in &mut s.points {
+            p.feather_pos = V2::new(if p.pos.x < 8.0 { -3.0 } else { 3.0 }, if p.pos.y < 8.0 { -3.0 } else { 3.0 });
+        }
+    }
+    let edge = px(&d, 8, 2);
+    assert!(edge[0] > 0.0 && edge[0] < 1.0, "feathered edge is partial: {edge:?}");
+    let whole = render_tiled(&d, d.bounds(), 3);
+    assert_eq!(whole.px, render_tiled(&d, d.bounds(), 256).px);
+    // Editing the roto mask is not served from a stale cache.
+    d.layers[top].roto_mask = Some(roto_square(0.0, 0.0, 16.0, 16.0));
+    assert!(close4(px(&d, 1, 1), [0.0, 0.0, 0.0, 1.0]));
+}
+
 #[test]
 fn effect_maps_are_cached_and_invalidated_by_pixel_changes() {
     let mut doc = doc_white(64, 64);
