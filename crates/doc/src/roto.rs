@@ -564,6 +564,65 @@ impl RotoMask {
     }
 }
 
+fn affine_pt(a: &photocraft_geom::Affine, p: V2) -> V2 {
+    let q = a.apply(photocraft_geom::Point::new(p.x, p.y));
+    V2::new(q.x, q.y)
+}
+
+/// A vector (handle or offset) maps through the linear part only.
+fn affine_vec(a: &photocraft_geom::Affine, v: V2) -> V2 {
+    let [m0, m1, m2, m3, _, _] = a.m;
+    V2::new(m0 * v.x + m2 * v.y, m1 * v.x + m3 * v.y)
+}
+
+/// Bakes the transform chain (the shape's own, then each enclosing group's, innermost first) and
+/// `a` into every point, and resets all node transforms.
+fn bake_group(g: &mut Group, chain: &mut Vec<Transform2D>, a: &photocraft_geom::Affine) {
+    chain.push(g.transform);
+    for n in &mut g.children {
+        match n {
+            Node::Group(c) => bake_group(c, chain, a),
+            Node::Shape(s) => {
+                let own = s.transform;
+                let through = |p: V2| {
+                    let q = chain.iter().rev().fold(own.apply(p), |acc, t| t.apply(acc));
+                    affine_pt(a, q)
+                };
+                let through_vec = |v: V2| {
+                    let w = chain.iter().rev().fold(own.apply_vec(v), |acc, t| t.apply_vec(acc));
+                    affine_vec(a, w)
+                };
+                for p in &mut s.points {
+                    p.pos = through(p.pos);
+                    p.tangent_in = through_vec(p.tangent_in);
+                    p.tangent_out = through_vec(p.tangent_out);
+                    p.feather_pos = through_vec(p.feather_pos);
+                    p.feather_in = through_vec(p.feather_in);
+                    p.feather_out = through_vec(p.feather_out);
+                }
+                s.transform = Transform2D::default();
+            }
+        }
+    }
+    chain.pop();
+    g.transform = Transform2D::default();
+}
+
+impl RotoMask {
+    /// Applies a layer-level affine (a move, Free Transform or canvas change). A pure translation
+    /// rides on the root group's transform; anything else is baked exactly into the points, and
+    /// every node transform is reset. Blur radii and feather lengths are not rescaled.
+    pub fn apply_affine(&mut self, a: &photocraft_geom::Affine) {
+        let [m0, m1, m2, m3, tx, ty] = a.m;
+        if m0 == 1.0 && m1 == 0.0 && m2 == 0.0 && m3 == 1.0 {
+            self.root.transform.translate.x += tx;
+            self.root.transform.translate.y += ty;
+            return;
+        }
+        bake_group(&mut self.root, &mut Vec::new(), a);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -767,5 +826,44 @@ mod tests {
         let v = t.apply_vec(V2::new(10.0, 0.0));
         assert!(v.x.abs() < 1e-9 && (v.y - 10.0).abs() < 1e-9, "{v:?}");
         assert_eq!(Transform2D::default().apply(V2::new(3.0, 4.0)), V2::new(3.0, 4.0));
+    }
+
+    #[test]
+    fn apply_affine_translation_moves_the_root_and_general_affines_bake_exactly() {
+        use photocraft_geom::Affine;
+        let mut m = mask3();
+        m.apply_affine(&Affine::translate(7.0, -2.0));
+        assert_eq!(m.root.transform.translate, V2::new(7.0, -2.0));
+        // Points are untouched by a translation: it rides on the root transform.
+        let Some(Node::Shape(s)) = m.find(NodeId(1)) else { panic!("shape") };
+        assert_eq!(s.points[1].pos, V2::new(1.0, 0.0));
+
+        // A 90 degree rotation bakes into the points, handles and feather offsets, and resets
+        // every transform so the tree renders the same geometry.
+        let mut m = mask3();
+        if let Some(sh) = m.shape_mut(NodeId(1)) {
+            sh.transform.translate = V2::new(10.0, 0.0);
+            sh.points[1].tangent_out = V2::new(2.0, 0.0);
+            sh.points[1].feather_pos = V2::new(0.0, 3.0);
+        }
+        let g = m.group(&[NodeId(1)], "g").unwrap();
+        if let Some(Node::Group(grp)) = m.find_mut(g) {
+            grp.transform.translate = V2::new(0.0, 5.0);
+        }
+        m.apply_affine(&Affine::rotate(std::f64::consts::FRAC_PI_2));
+        let Some(Node::Shape(s)) = m.find(NodeId(1)) else { panic!("shape") };
+        // Original point 1 is (1, 0): shape translate -> (11, 0), group translate -> (11, 5),
+        // rotate 90 degrees -> (-5, 11).
+        let p = s.points[1].pos;
+        assert!((p.x + 5.0).abs() < 1e-9 && (p.y - 11.0).abs() < 1e-9, "{p:?}");
+        // The tangent (2, 0) rotates to (0, 2); the feather offset (0, 3) rotates to (-3, 0).
+        let t = s.points[1].tangent_out;
+        assert!(t.x.abs() < 1e-9 && (t.y - 2.0).abs() < 1e-9, "{t:?}");
+        let f = s.points[1].feather_pos;
+        assert!((f.x + 3.0).abs() < 1e-9 && f.y.abs() < 1e-9, "{f:?}");
+        assert_eq!(s.transform, Transform2D::default());
+        let Some(Node::Group(grp)) = m.find(g) else { panic!("group") };
+        assert_eq!(grp.transform, Transform2D::default());
+        m.validate().unwrap();
     }
 }

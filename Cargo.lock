@@ -3525,6 +3525,7 @@ version = "0.2.0"
 dependencies = [
  "blake3",
  "flate2",
+ "kurbo 0.13.1",
  "photocraft-algo",
  "photocraft-cms",
  "photocraft-codecs",

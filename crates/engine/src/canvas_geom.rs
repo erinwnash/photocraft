@@ -80,6 +80,11 @@ pub(crate) fn transform_layer_geometry(l: &mut Layer, a: &Affine, content: bool,
     {
         vm.path = vm.path.transform(a);
     }
+    if let Some(r) = l.roto_mask.as_mut()
+        && (content || !r.linked)
+    {
+        r.apply_affine(a);
+    }
     if let Some((x, y)) = l.effects.reference {
         let p = map_pt(a, [x, y]);
         l.effects.reference = Some((p[0], p[1]));

@@ -62,6 +62,7 @@ pub mod print_cmds;
 pub mod proof_sim;
 pub mod render_cmds;
 pub mod retouch_cmds;
+pub mod roto_cmds;
 pub mod select_extra_cmds;
 pub mod selection_cmds;
 pub mod slice_cmds;

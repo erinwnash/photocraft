@@ -238,6 +238,12 @@ pub(crate) fn transform_layer(doc_sel: Option<&Surface>, l: &mut Layer, h: &Homo
     {
         vm.path = vm.path.transform(&a);
     }
+    if let Some(r) = l.roto_mask.as_mut()
+        && r.linked
+        && let Some(a) = affine
+    {
+        r.apply_affine(&a);
+    }
     Ok(())
 }
 

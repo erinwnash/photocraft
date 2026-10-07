@@ -306,6 +306,9 @@ fn shift_shown(doc: &Document, l: &mut Layer, dx: i32, dy: i32) {
     if let Some(vm) = l.vector_mask.as_mut().filter(|v| v.linked) {
         vm.path = vm.path.transform(&a);
     }
+    if let Some(r) = l.roto_mask.as_mut().filter(|r| r.linked) {
+        r.apply_affine(&a);
+    }
     match &mut l.content {
         LayerContent::Raster(s) => *s = translate_surface(s, dx, dy),
         LayerContent::Text(t) => {

@@ -382,6 +382,11 @@ pub fn translate_vectors(doc: &Document, l: &mut Layer, dx: f64, dy: f64) {
     {
         vm.path = vm.path.transform(&a);
     }
+    if let Some(r) = l.roto_mask.as_mut()
+        && r.linked
+    {
+        r.apply_affine(&a);
+    }
     match &mut l.content {
         LayerContent::Shape(sh) => {
             transform_shape(sh, &a);

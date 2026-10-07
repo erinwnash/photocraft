@@ -61,3 +61,12 @@ next to the files:
 | `corpus/pngsuite/` | PngSuite | Willem van Schaik | <http://www.schaik.com/pngsuite/> | Public domain |
 
 Files copied into `corpus/` by hand (tiff, exr, raw) must be MIT, BSD or CC0.
+
+## Code dependencies added for specific features
+
+Crates are tracked in `Cargo.lock`; features that depend on a third-party algorithm are recorded here
+with the license that was checked before adding them.
+
+| Crate | Used for | Source | License |
+|---|---|---|---|
+| `kurbo` 0.13 (and its dependency `polycool` 0.4) | Roto mask freehand tool: `kurbo::fit_to_bezpath` reduces a Catmull-Rom spline through the stroke samples to a few bezier points (`crates/engine/src/roto_cmds.rs`) | <https://github.com/linebender/kurbo> | Apache-2.0 OR MIT (`polycool`: MIT OR Apache-2.0) |
