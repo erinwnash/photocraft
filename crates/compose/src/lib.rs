@@ -1257,6 +1257,7 @@ fn layer_identity(layer: &Layer, h: &mut std::collections::hash_map::DefaultHash
     }
     if let Some(rm) = &layer.roto_mask {
         rm.fingerprint().hash(h);
+        photocraft_vector::roto::is_editing(layer.id).hash(h);
     }
     format!("{:?}", layer.effects).hash(h);
     h.write_u8(0xfe);

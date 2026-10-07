@@ -1,4 +1,5 @@
 use photocraft_doc::roto::Node;
+use photocraft_vector as vector;
 use serde_json::json;
 
 use super::*;
@@ -300,4 +301,140 @@ fn mode_names_round_trip_and_ui_state_serializes_without_transient_fields() {
     assert!(json.get("sel").is_none() && json.get("nuke_text").is_none());
     let back: RotoUi = serde_json::from_value(json).unwrap();
     assert_eq!((back.mode, back.hide_feather, back.sel), (RotoMode::Pen, true, Selection::default()));
+}
+
+// ---------------------------------------------------------------------------------------------
+// The editing view: the image stays visible while a roto mask is edited, the mask drawn over it.
+
+/// The editing layer is process-wide: tests that touch it run one at a time.
+static VIEW_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn editing() -> Option<photocraft_doc::LayerId> {
+    vector::roto::editing_layer()
+}
+
+fn frame(a: &mut PhotocraftApp, ctx: &egui::Context) {
+    let mut out = ctx.run_ui(egui::RawInput::default(), |_| {});
+    out.textures_delta.clear();
+    sync_view(a, ctx);
+}
+
+#[test]
+fn the_editing_view_follows_the_tool_the_layer_and_the_apply_setting() {
+    let _g = VIEW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    vector::roto::set_editing_layer(None);
+    let ctx = egui::Context::default();
+    let mut a = app();
+    let layer = a.session.active().unwrap().active_layer.unwrap();
+    // No roto mask yet: nothing to edit, the layer is untouched.
+    frame(&mut a, &ctx);
+    assert_eq!(editing(), None);
+    // Drawing the first shape creates the mask; from the next frame the image shows through.
+    a.ui.roto.mode = RotoMode::Rectangle;
+    drag(&mut a, [40.0, 40.0], [120.0, 100.0], Modifiers::NONE);
+    frame(&mut a, &ctx);
+    assert_eq!(editing(), Some(layer), "image stays visible while drawing");
+    assert!(a.ui.roto.matte.tex.is_some(), "the mask is drawn over it");
+    // Another tool: the mask applies to the layer again.
+    a.ui.tool = Tool::Brush;
+    frame(&mut a, &ctx);
+    assert_eq!(editing(), None);
+    assert!(a.ui.roto.matte.tex.is_none(), "no overlay texture is kept around");
+    // Back to Roto; choosing "apply while editing" turns the view off.
+    a.ui.tool = Tool::Roto;
+    frame(&mut a, &ctx);
+    assert_eq!(editing(), Some(layer));
+    a.ui.roto.apply_while_editing = true;
+    frame(&mut a, &ctx);
+    assert_eq!(editing(), None, "the user asked to see the mask applied live");
+    a.ui.roto.apply_while_editing = false;
+    // A disabled mask is not applied, so there is nothing to see through.
+    a.run("roto.instance.set", json!({"enabled": false})).unwrap();
+    frame(&mut a, &ctx);
+    assert_eq!(editing(), None);
+    a.run("roto.instance.set", json!({"enabled": true})).unwrap();
+    frame(&mut a, &ctx);
+    assert_eq!(editing(), Some(layer));
+    // The layer losing its mask (undo) or going away must not leave the view stuck on or loop.
+    a.run("layer.roto.delete", json!({})).unwrap();
+    frame(&mut a, &ctx);
+    frame(&mut a, &ctx);
+    assert_eq!(editing(), None);
+    vector::roto::set_editing_layer(None);
+}
+
+#[test]
+fn switching_documents_ends_the_editing_view_but_never_touches_a_view_this_app_does_not_own() {
+    let _g = VIEW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    vector::roto::set_editing_layer(None);
+    let ctx = egui::Context::default();
+    let mut a = app();
+    a.ui.roto.mode = RotoMode::Rectangle;
+    drag(&mut a, [40.0, 40.0], [120.0, 100.0], Modifiers::NONE);
+    frame(&mut a, &ctx);
+    let first = editing().expect("editing the first document's layer");
+    // A new document becomes active: the first document's layer must not stay in the editing view.
+    a.run("file.new", json!({"width": 100, "height": 100, "background": "white", "depth": 8})).unwrap();
+    a.run("layer.new.layer", json!({"name": "Other"})).unwrap();
+    frame(&mut a, &ctx);
+    assert_ne!(editing(), Some(first));
+    assert_eq!(editing(), None, "nothing is edited in the new document");
+
+    // Another app instance (or test) owns a view: running a frame here must leave it alone.
+    let theirs = photocraft_doc::LayerId(987_654);
+    vector::roto::set_editing_layer(Some(theirs));
+    a.ui.tool = Tool::Roto;
+    frame(&mut a, &ctx);
+    a.ui.tool = Tool::Brush;
+    frame(&mut a, &ctx);
+    assert_eq!(editing(), Some(theirs), "a view this app did not start is not this app's to end");
+    vector::roto::set_editing_layer(None);
+}
+
+#[test]
+fn the_matte_is_red_over_hidden_areas_and_clear_over_revealed_ones() {
+    let mut m = RotoMask::default();
+    let mut s = photocraft_doc::roto::Shape::new(NodeId(1), "s");
+    for (i, (x, y)) in [(10.0, 10.0), (30.0, 10.0), (30.0, 30.0), (10.0, 30.0)].into_iter().enumerate() {
+        s.points.push(photocraft_doc::roto::Point::corner(PointId(i as u64 + 1), x, y));
+    }
+    m.root.children.push(Node::Shape(s));
+    let ([w, h], px) = matte_image(&m, 40, 40, 1024);
+    assert_eq!((w, h, px.len()), (40, 40, 1600), "small documents are shown at full size");
+    let at = |x: usize, y: usize| px[y * w + x];
+    assert_eq!(at(20, 20).a(), 0, "inside the shape the image shows unchanged");
+    let hidden = at(2, 2);
+    assert!(hidden.a() >= 126 && hidden.a() <= 129, "half-strength rubylith where the mask hides: {hidden:?}");
+    assert!(hidden.r() > hidden.g() && hidden.r() > hidden.b(), "and it is red");
+    // Big documents are previewed at reduced size, with the mask scaled to match.
+    let ([w, h], px) = matte_image(&m, 40, 40, 20);
+    assert_eq!((w, h), (20, 20));
+    assert_eq!(px[10 * 20 + 10].a(), 0);
+    assert!(px[20 + 1].a() > 100);
+}
+
+#[test]
+fn a_reduced_matte_scales_blur_and_root_moves_so_it_matches_the_full_size_mask() {
+    let mut m = RotoMask::default();
+    let mut s = photocraft_doc::roto::Shape::new(NodeId(1), "s");
+    for (i, (x, y)) in [(40.0, 40.0), (120.0, 40.0), (120.0, 120.0), (40.0, 120.0)].into_iter().enumerate() {
+        s.points.push(photocraft_doc::roto::Point::corner(PointId(i as u64 + 1), x, y));
+    }
+    s.blur = 12.0;
+    m.root.children.push(Node::Shape(s));
+    // A linked layer move rides on the root transform, which the preview must scale too.
+    m.root.transform.translate = photocraft_doc::roto::V2::new(10.0, 6.0);
+    let full = vector::roto::roto_values(&m, photocraft_geom::Rect::new(0, 0, 200, 200));
+    let ([w, _], px) = matte_image(&m, 200, 200, 100);
+    assert_eq!(w, 100);
+    let mut worst = 0.0f32;
+    for y in 0..100usize {
+        for x in 0..100usize {
+            // Matte alpha is 0.5 * (1 - coverage); compare it with the full-size mask at the same spot.
+            let preview_cov = 1.0 - f32::from(px[y * 100 + x].a()) / 127.5;
+            let full_cov = full[(y * 2 + 1) * 200 + (x * 2 + 1)];
+            worst = worst.max((preview_cov - full_cov).abs());
+        }
+    }
+    assert!(worst < 0.12, "preview and full-size masks differ by {worst}");
 }

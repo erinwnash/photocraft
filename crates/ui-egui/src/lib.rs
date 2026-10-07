@@ -778,6 +778,7 @@ impl eframe::App for PhotocraftApp {
         }
         self.last_frame_time = now;
         self.sync_views();
+        roto_ui::sync_view(self, ctx);
         self.check_gpu(ctx);
         #[cfg(all(debug_assertions, not(target_arch = "wasm32")))]
         if self.live_tokens.poll(ctx, self.ui.theme) {

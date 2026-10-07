@@ -1031,6 +1031,41 @@ fn feather_set_all(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 // ---------------------------------------------------------------------------
+// Editing view
+
+/// `view.rotoEdit`: while a layer's roto mask is being edited it is not applied to the layer's
+/// pixels (the editor shows the whole image and draws the mask as an overlay, so the user can see
+/// what they are tracing). View state like the Channels panel's eyes: no history step, a clean
+/// document stays clean, nothing is saved.
+fn view_edit(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "view.rotoEdit";
+    let layer = layer_id(s, p)?;
+    let want = match p.get("on") {
+        None | Some(Value::Null) => !vector::roto::is_editing(layer),
+        Some(v) => v.as_bool().ok_or_else(|| bad(CMD, "`on` must be true or false"))?,
+    };
+    let st = s.active().ok_or(EngineError::NoDocument)?;
+    let l = st.doc.layer(layer).ok_or(EngineError::NoLayer(layer))?;
+    if want && l.roto_mask.is_none() {
+        return Err(bad(CMD, format!("layer \"{}\" has no roto mask", l.name)));
+    }
+    let editing = vector::roto::is_editing(layer);
+    // Turning off for a layer that is not the one being edited leaves the other edit alone.
+    if want != editing && (want || editing) {
+        vector::roto::set_editing_layer(want.then_some(layer));
+        let st = s.active_mut().ok_or(EngineError::NoDocument)?;
+        let clean = st.saved_revision == st.revision;
+        st.revision += 1;
+        if clean {
+            st.saved_revision = st.revision;
+        }
+        // The composite changes (a mask stops or starts applying): everything may differ on screen.
+        st.last_damage = None;
+    }
+    Ok(json!({ "layer": layer.0, "editing": vector::roto::is_editing(layer) }))
+}
+
+// ---------------------------------------------------------------------------
 // Nuke exchange
 // ---------------------------------------------------------------------------
 
@@ -1099,6 +1134,16 @@ const COMMON: &str = r##""parent":groupId?=root,"index":n? (insert position),"na
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
+        CommandSpec {
+            id: "view.rotoEdit",
+            label: "Edit Roto Mask View",
+            menu: &[],
+            shortcut: None,
+            params: r##"{"layer":id?,"on":bool? (default: toggle)} → {layer,editing}. While on, the layer's roto mask is not applied to its pixels (the editor overlays it instead); view state, not an undo step, not saved"##,
+            enabled: has_layer,
+            run: view_edit,
+            journal: false,
+        },
         spec!("layer.roto.add", "Add Roto Mask", ["Layer", "Roto Mask"], r##"{"layer":id?}"##, has_layer, roto_add),
         spec!("layer.roto.delete", "Delete Roto Mask", ["Layer", "Roto Mask"], r##"{"layer":id?}"##, has_roto, roto_remove),
         CommandSpec {

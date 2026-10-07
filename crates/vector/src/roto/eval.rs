@@ -55,9 +55,16 @@ pub fn prepare(m: &RotoMask, rect: Rect) -> Result<usize, Vec<f32>> {
 /// Evaluates `m` over `rect` with `exec`. Call [`prepare`] first and only run when it is `Ok`.
 pub fn run<E: Executor>(m: &RotoMask, rect: Rect, exec: &mut E) -> Vec<f32> {
     let mut acc = exec.new_acc();
-    // The root group's transform is the outermost one (it moves a linked mask with its layer).
-    let mut xf: Vec<Transform2D> = vec![m.root.transform];
-    walk(&m.root, rect, m.overlap, &mut xf, exec, &mut acc);
+    if m.root.children.iter().any(renders) {
+        // The root group's transform is the outermost one (it moves a linked mask with its layer).
+        let mut xf: Vec<Transform2D> = vec![m.root.transform];
+        walk(&m.root, rect, m.overlap, &mut xf, exec, &mut acc);
+    } else {
+        // Nothing to draw: the mask reveals everything, as a fresh vector mask does. Zero coverage
+        // would hide the whole layer the moment a roto mask is added (or its last shape deleted).
+        let everything = vec![1.0f32; rect.width() as usize * rect.height() as usize];
+        exec.combine_shape(&mut acc, &everything, rect, rect, 0.0, false, BlendOp::Union, 1.0);
+    }
     exec.finish(acc, m.density, m.invert)
 }
 

@@ -527,3 +527,43 @@ fn a_maximum_size_freehand_stroke_is_fitted_quickly_and_one_past_it_is_refused()
     let too_many: Vec<Value> = (0..=n).map(|i| json!([f64::from(i), 0.0])).collect();
     assert!(s.execute("roto.node.add_freehand", json!({"points": too_many})).is_err());
 }
+
+#[test]
+fn view_roto_edit_is_view_state_with_no_history_and_keeps_a_clean_document_clean() {
+    use vector::roto::{editing_layer, set_editing_layer};
+    set_editing_layer(None);
+    let mut s = with_roto_layer(40, 30);
+    let id = s.active().unwrap().active_layer.unwrap();
+    // Mark the document clean, as just after saving.
+    let st = s.active_mut().unwrap();
+    st.saved_revision = st.revision;
+    let (rev, clean) = (st.revision, true);
+
+    let r = s.execute("view.rotoEdit", json!({"on": true})).unwrap();
+    assert_eq!((r["editing"].as_bool(), editing_layer()), (Some(true), Some(id)));
+    let st = s.active().unwrap();
+    assert!(st.revision > rev, "the canvas must recomposite");
+    assert!(st.last_damage.is_none(), "everything may have changed on screen");
+    assert_eq!(st.saved_revision == st.revision, clean, "a view change never dirties the document");
+    // Not an undo step: undo takes back adding the mask, not the view.
+    undo(&mut s);
+    assert!(s.active().unwrap().doc.layer(id).unwrap().roto_mask.is_none(), "undo took back adding the roto mask, not the view");
+
+    // Toggling, and turning off for a layer that is not the edited one, leaves the edit alone.
+    set_editing_layer(None);
+    let mut s = with_roto_layer(40, 30);
+    let id = s.active().unwrap().active_layer.unwrap();
+    s.execute("view.rotoEdit", json!({})).unwrap();
+    assert_eq!(editing_layer(), Some(id), "no `on` toggles it on");
+    s.execute("view.rotoEdit", json!({"layer": id.0 + 1000, "on": false})).ok();
+    assert_eq!(editing_layer(), Some(id), "another layer's off does not end this edit");
+    s.execute("view.rotoEdit", json!({})).unwrap();
+    assert_eq!(editing_layer(), None, "toggled off");
+
+    // A layer without a roto mask cannot be edited.
+    set_editing_layer(None);
+    let mut plain = session(40, 30);
+    assert!(plain.execute("view.rotoEdit", json!({"on": true})).is_err());
+    assert_eq!(editing_layer(), None);
+    assert!(plain.execute("view.rotoEdit", json!({"on": "yes"})).is_err());
+}

@@ -301,6 +301,7 @@
 	Delete Roto Mask	ロトマスクを削除
 	Rasterize Roto Mask	ロトマスクをラスタライズ
 	Roto	ロト
+	Apply mask while editing	編集中にマスクを適用
 	All points	すべてのポイント
 	Backend	バックエンド
 	Bezier	ベジェ

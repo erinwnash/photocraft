@@ -135,11 +135,11 @@ fn nested_groups_with_transforms_match() {
     m.root.children.push(Node::Group(outer));
     m.root.transform.translate = V2::new(3.0, 2.0);
     worst(&g, &m, R, "nested groups");
-    // A hidden shape and an empty group do nothing, and an empty mask is all zeros on both.
+    // A hidden shape and an empty group do nothing, and an empty mask reveals everything on both.
     let mut empty = RotoMask::default();
     empty.root.children.push(Node::Group(Group::new(NodeId(1), "empty")));
     worst(&g, &empty, R, "empty group");
-    assert!(g.evaluate(&RotoMask::default(), R).is_some_and(|v| v.iter().all(|x| *x == 0.0)));
+    assert!(g.evaluate(&RotoMask::default(), R).is_some_and(|v| v.iter().all(|x| *x == 1.0)), "an empty mask reveals everything, on the GPU too");
 }
 
 #[test]

@@ -12,6 +12,7 @@ use egui::{Color32, Modifiers, Pos2, Rect, Stroke, vec2};
 use photocraft_doc::LayerId;
 use photocraft_doc::RotoMask;
 use photocraft_doc::roto::{Group, Node, NodeId, PointId};
+use photocraft_vector as vector;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -102,12 +103,43 @@ enum Gesture {
     Freehand(Vec<P2>),
 }
 
+/// The red overlay drawn over the image while a roto mask is edited, kept as a texture and rebuilt
+/// only when the mask, the document or the preview size changes. Transient: never saved, and every
+/// copy compares equal (it is a cache, not state).
+#[derive(Clone, Default)]
+pub struct Matte {
+    key: u64,
+    tex: Option<egui::TextureHandle>,
+}
+
+impl std::fmt::Debug for Matte {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Matte({})", if self.tex.is_some() { "texture" } else { "none" })
+    }
+}
+
+impl PartialEq for Matte {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
 /// Roto tool and panel state. Everything but the mode is transient.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct RotoUi {
     pub mode: RotoMode,
     /// Hide the feather outline and handles on the canvas.
     pub hide_feather: bool,
+    /// Apply the mask to the layer live while editing. Off (the default) the whole image stays
+    /// visible with the mask drawn over it in red, so there is something to trace.
+    #[serde(default)]
+    pub apply_while_editing: bool,
+    #[serde(skip)]
+    matte: Matte,
+    /// The layer this app put in the editing view. The view is process-wide state, so the app only
+    /// ever turns off a view it turned on.
+    #[serde(skip)]
+    view_layer: Option<photocraft_doc::LayerId>,
     #[serde(skip)]
     pub sel: Selection,
     /// Selected rows of the layer tree.
@@ -190,6 +222,94 @@ fn prune(app: &mut PhotocraftApp) {
         None => sel.clear(),
     }
     app.ui.roto.sel = sel;
+}
+
+// ---------------------------------------------------------------------------------------------
+// The editing view
+
+/// Longest side of the matte preview, idle and while a gesture is dragging (a reduced mask is
+/// evaluated, so dragging stays responsive on large documents).
+const MATTE_IDLE_SIDE: u32 = 1024;
+const MATTE_DRAG_SIDE: u32 = 512;
+
+/// `mask` scaled by `s` so that evaluating it over a rect `s` times smaller gives the same
+/// picture: the mask's own transform scales, and blur radii (lengths, not coordinates) scale too.
+fn scaled_for_preview(mask: &RotoMask, s: f64) -> RotoMask {
+    fn blurs(g: &mut Group, s: f32) {
+        for n in &mut g.children {
+            match n {
+                Node::Shape(sh) => sh.blur *= s,
+                Node::Group(c) => blurs(c, s),
+            }
+        }
+    }
+    let mut m = mask.clone();
+    let t = &mut m.root.transform;
+    // s * T(p) = pivot + (s * translate + (s - 1) * pivot) + R K (s * S) (p - pivot)
+    t.translate = photocraft_doc::roto::V2::new(s * t.translate.x + (s - 1.0) * t.pivot.x, s * t.translate.y + (s - 1.0) * t.pivot.y);
+    t.scale = photocraft_doc::roto::V2::new(t.scale.x * s, t.scale.y * s);
+    blurs(&mut m.root, s as f32);
+    m
+}
+
+/// The rubylith for `mask` over a `w` by `h` document: half-strength red where the mask hides the
+/// image, clear where it reveals it (the usual mask overlay), at most `max_side` px on the longest
+/// side. Returns the image size and its premultiplied pixels.
+pub(crate) fn matte_image(mask: &RotoMask, w: u32, h: u32, max_side: u32) -> ([usize; 2], Vec<Color32>) {
+    let scale = (f64::from(max_side) / f64::from(w.max(h).max(1))).min(1.0);
+    let (pw, ph) = (((f64::from(w) * scale).ceil() as i32).max(1), ((f64::from(h) * scale).ceil() as i32).max(1));
+    let preview = scaled_for_preview(mask, scale);
+    let values = vector::roto::roto_values_auto(&preview, photocraft_geom::Rect::new(0, 0, pw, ph));
+    let px = values
+        .iter()
+        .map(|c| {
+            let a = 0.5 * (1.0 - c.clamp(0.0, 1.0));
+            Color32::from_rgba_premultiplied((255.0 * a).round() as u8, 0, 0, (255.0 * a).round() as u8)
+        })
+        .collect();
+    ([pw as usize, ph as usize], px)
+}
+
+/// Keeps the editing view in step with the tool: while the Roto tool is active on a layer that has
+/// an enabled roto mask (and the user has not asked to see it applied live), that mask is not
+/// applied to the layer, so the whole image stays visible, and it is drawn as a red overlay
+/// instead. Called every frame, before the canvas draws.
+pub fn sync_view(app: &mut PhotocraftApp, ctx: &egui::Context) {
+    let wanted = (app.ui.tool == Tool::Roto && !app.ui.roto.apply_while_editing).then(|| active(app).filter(|(_, m)| m.enabled).map(|(id, _)| id)).flatten();
+    let owned = app.ui.roto.view_layer;
+    if wanted != owned {
+        // End the view this app started (the layer may be gone or in another document: then the
+        // command fails and the flag is cleared directly), then start the new one.
+        if let Some(old) = owned {
+            if app.run("view.rotoEdit", json!({"layer": old.0, "on": false})).is_err() && vector::roto::is_editing(old) {
+                vector::roto::set_editing_layer(None);
+            }
+            app.ui.roto.view_layer = None;
+        }
+        if let Some(layer) = wanted
+            && app.run("view.rotoEdit", json!({"layer": layer.0, "on": true})).is_ok()
+        {
+            app.ui.roto.view_layer = Some(layer);
+        }
+    }
+    let Some((layer, mask)) = active(app).filter(|(id, _)| app.ui.roto.view_layer == Some(*id) && vector::roto::is_editing(*id)) else {
+        app.ui.roto.matte = Matte::default();
+        return;
+    };
+    let Some(size) = app.session.active().map(|st| st.doc.size) else { return };
+    let max_side = if app.ui.roto.gesture.is_some() { MATTE_DRAG_SIDE } else { MATTE_IDLE_SIDE };
+    let key = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (mask.fingerprint(), layer.0, size.width, size.height, max_side).hash(&mut h);
+        h.finish()
+    };
+    if app.ui.roto.matte.key != key || app.ui.roto.matte.tex.is_none() {
+        let (dims, px) = matte_image(mask, size.width, size.height, max_side);
+        let image = egui::ColorImage { size: dims, source_size: egui::vec2(dims[0] as f32, dims[1] as f32), pixels: px };
+        let tex = ctx.load_texture("roto-matte", image, egui::TextureOptions::LINEAR);
+        app.ui.roto.matte = Matte { key, tex: Some(tex) };
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -486,6 +606,16 @@ pub fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform
         return;
     }
     let Some((_, m)) = active(app) else { return };
+    // The mask over the image, under the outlines and handles.
+    if let (Some(tex), Some(st)) = (&app.ui.roto.matte.tex, app.session.active()) {
+        let rect = Rect::from_two_pos(to_screen(xf, [0.0, 0.0]), to_screen(xf, [f64::from(st.doc.size.width), f64::from(st.doc.size.height)]));
+        let uv = if xf.flip {
+            Rect::from_min_max(egui::pos2(1.0, 0.0), egui::pos2(0.0, 1.0))
+        } else {
+            Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0))
+        };
+        painter.image(tex.id(), rect, uv, Color32::WHITE);
+    }
     let sel = &app.ui.roto.sel;
     for v in edit::shape_views(m) {
         let selected_shape = sel.shape == Some(v.id);
@@ -581,6 +711,8 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
     if crate::widgets::checkbox(ui, &mut show, tl!("Show feather")).changed() {
         app.ui.roto.hide_feather = !show;
     }
+    crate::widgets::vline(ui, 22.0);
+    crate::widgets::checkbox(ui, &mut app.ui.roto.apply_while_editing, tl!("Apply mask while editing"));
     crate::widgets::vline(ui, 22.0);
     let hint = match app.ui.roto.mode {
         RotoMode::Select => tl!("Drag points and handles · ⌘-drag a point to feather · ⌘⌥-click the outline to add a point · Delete removes"),

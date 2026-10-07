@@ -34,6 +34,7 @@ fn key(layer: &Layer, canvas: Rect) -> u64 {
     (canvas.x0, canvas.y0, canvas.x1, canvas.y1).hash(&mut h);
     format!("{:?}", layer.vector_mask).hash(&mut h);
     layer.roto_mask.as_ref().map(photocraft_doc::RotoMask::fingerprint).hash(&mut h);
+    photocraft_vector::roto::is_editing(layer.id).hash(&mut h);
     if let Some(m) = &layer.mask {
         (m.enabled, m.density.to_bits(), m.feather.to_bits()).hash(&mut h);
         format!("{:?}", m.surface.default_pixel()).hash(&mut h);
@@ -55,11 +56,17 @@ const FEATHER_SIGMA: f32 = 1.0;
 /// Photoshop's feather tops out at 1000 px.
 const MAX_FEATHER_SIGMA: f32 = 1000.0 * FEATHER_SIGMA;
 
+/// The layer's roto mask when it is applied to its pixels: enabled, and not being edited (while
+/// it is edited the editor shows the whole layer and draws the mask as an overlay).
+fn applied_roto(layer: &Layer) -> Option<&photocraft_doc::RotoMask> {
+    layer.roto_mask.as_ref().filter(|r| r.enabled && !photocraft_vector::roto::is_editing(layer.id))
+}
+
 /// Whether `layer` has an enabled mask that must be rendered canvas-wide through
 /// [`combined_mask`] rather than tile by tile: a feathered pixel or vector mask, or any roto
 /// mask (its feather band and blur reach across tiles).
 pub fn has_feather(layer: &Layer) -> bool {
-    layer.roto_mask.as_ref().is_some_and(|r| r.enabled)
+    applied_roto(layer).is_some()
         || layer.mask.as_ref().is_some_and(|m| m.enabled && feather_sigma(m.feather) > 0.0)
         || layer.vector_mask.as_ref().is_some_and(|v| v.enabled && feather_sigma(v.feather) > 0.0)
 }
@@ -103,7 +110,7 @@ fn gaussian(v: &mut [f32], w: usize, h: usize, sigma: f32) {
 pub fn combined_mask(layer: &Layer, canvas: Rect) -> Option<Surface> {
     let vm = layer.vector_mask.as_ref().filter(|v| v.enabled);
     let pixel = layer.mask.as_ref().filter(|m| m.enabled);
-    let roto = layer.roto_mask.as_ref().filter(|r| r.enabled);
+    let roto = applied_roto(layer);
     let (sv, sp) = (vm.map_or(0.0, |v| feather_sigma(v.feather)), pixel.map_or(0.0, |m| feather_sigma(m.feather)));
     if vm.is_none() && roto.is_none() && sp <= 0.0 {
         return None;

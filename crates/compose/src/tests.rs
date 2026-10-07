@@ -760,6 +760,22 @@ fn roto_mask_masks_a_layer_combines_with_pixel_mask_and_is_tile_independent() {
 }
 
 #[test]
+fn a_layer_whose_roto_mask_is_being_edited_shows_through_unmasked() {
+    use photocraft_vector::roto::set_editing_layer;
+    let mut d = doc_white(16, 16);
+    let mut l = solid_layer("k", Rect::new(0, 0, 16, 16), [0.0, 0.0, 0.0, 1.0]);
+    l.roto_mask = Some(roto_square(4.0, 4.0, 12.0, 12.0));
+    let id = l.id;
+    d.layers.push(l);
+    assert!(close4(px(&d, 1, 1), [1.0; 4]), "applied: outside the shape the backdrop shows");
+    set_editing_layer(Some(id));
+    assert!(close4(px(&d, 1, 1), [0.0, 0.0, 0.0, 1.0]), "editing: the whole layer shows, not a cached masked result");
+    assert_eq!(render_tiled(&d, d.bounds(), 3).px, render_tiled(&d, d.bounds(), 256).px);
+    set_editing_layer(None);
+    assert!(close4(px(&d, 1, 1), [1.0; 4]), "applied again once editing ends");
+}
+
+#[test]
 fn effect_maps_are_cached_and_invalidated_by_pixel_changes() {
     let mut doc = doc_white(64, 64);
     let mut l = solid_layer("fx", Rect::new(16, 16, 48, 48), [1.0, 0.0, 0.0, 1.0]);

@@ -72,7 +72,7 @@ fn degenerate_inputs_do_not_panic() {
     let mut s = Shape::new(NodeId(1), "one-point");
     s.points.push(Point::corner(PointId(1), 5.0, 5.0));
     let v = roto_values(&mask_with(vec![s]), Rect::new(0, 0, 8, 8));
-    assert!(v.iter().all(|x| *x == 0.0));
+    assert!(v.iter().all(|x| *x == 1.0), "a shape still being drawn is not a shape: the mask reveals everything");
     let mut bad = square(2, 0.0, 0.0, 4.0, 4.0);
     bad.points[0].pos.x = f64::NAN;
     let v = roto_values(&mask_with(vec![bad]), Rect::new(0, 0, 8, 8));
@@ -305,4 +305,32 @@ fn nodes_with_nothing_to_draw_contribute_nothing_even_under_multiply_or_intersec
     let mut m = base.clone();
     m.root.children.push(Node::Shape(zero));
     assert_eq!(roto_values(&m, Rect::new(0, 0, 64, 64)), want);
+}
+
+#[test]
+fn a_mask_with_nothing_to_draw_reveals_everything_like_a_fresh_vector_mask() {
+    let rect = Rect::new(0, 0, 16, 16);
+    let all = |m: &RotoMask, want: f32| roto_values(m, rect).iter().all(|v| (*v - want).abs() < 1e-6);
+    // No nodes at all: adding a roto mask must not make the layer vanish.
+    assert!(all(&RotoMask::default(), 1.0));
+    // Nodes that draw nothing: a lone point, an empty group, hidden shapes.
+    let mut lone = Shape::new(NodeId(1), "lone");
+    lone.points.push(Point::corner(PointId(1), 3.0, 3.0));
+    let mut hidden = square(2, 0.0, 0.0, 8.0, 8.0);
+    hidden.visible = false;
+    let mut m = mask_with(vec![lone, hidden]);
+    m.root.children.push(Node::Group(Group::new(NodeId(9), "empty")));
+    assert!(all(&m, 1.0));
+    // The mask's own settings still apply to that "everything".
+    m.density = 0.5;
+    assert!(all(&m, 0.5));
+    m.density = 1.0;
+    m.invert = true;
+    assert!(all(&m, 0.0), "inverting everything hides everything");
+    // As soon as there is a real shape the mask is that shape, not everything.
+    let mut real = mask_with(vec![square(3, 4.0, 4.0, 8.0, 8.0)]);
+    let v = roto_values(&real, rect);
+    assert!(v[2 * 16 + 2].abs() < 1e-6 && (v[6 * 16 + 6] - 1.0).abs() < 1e-6);
+    real.root.children.clear();
+    assert!(all(&real, 1.0), "deleting the last shape reveals everything again");
 }

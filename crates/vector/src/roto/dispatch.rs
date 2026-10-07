@@ -33,6 +33,28 @@ pub fn has_accelerator() -> bool {
     ACCELERATOR.read().is_ok_and(|g| g.is_some())
 }
 
+static EDITING: RwLock<Option<photocraft_doc::LayerId>> = RwLock::new(None);
+
+/// The layer whose roto mask is being edited, if any. While a layer is being edited its roto
+/// mask is not applied to its pixels: the editor shows the whole image with the mask as an
+/// overlay instead, so the user can see what they are tracing. Set by the `view.rotoEdit`
+/// command (view state: never saved, never in history); the compositors consult it.
+pub fn editing_layer() -> Option<photocraft_doc::LayerId> {
+    EDITING.read().ok().and_then(|g| *g)
+}
+
+/// Whether `layer`'s roto mask is being edited (and so is not applied to its pixels).
+pub fn is_editing(layer: photocraft_doc::LayerId) -> bool {
+    editing_layer() == Some(layer)
+}
+
+/// Sets (or with `None` clears) the layer being edited.
+pub fn set_editing_layer(layer: Option<photocraft_doc::LayerId>) {
+    if let Ok(mut g) = EDITING.write() {
+        *g = layer;
+    }
+}
+
 /// `Backend::Auto` uses the accelerator from this many pixels up (below it a round trip to the
 /// GPU costs more than the CPU takes) and only when some shape is blurred: measured on a 4K frame,
 /// the accelerator is about 10x faster than the CPU for blur and no faster without it, because
@@ -108,7 +130,7 @@ mod tests {
         with_fake(
             |n| Some(vec![0.5; n]),
             |fake| {
-                assert!(roto_values_auto(&mask(Backend::Cpu), SMALL).iter().all(|v| *v == 0.0), "CPU: an empty mask is zero");
+                assert!(roto_values_auto(&mask(Backend::Cpu), SMALL).iter().all(|v| *v == 1.0), "CPU: an empty mask reveals everything");
                 assert_eq!(fake.calls.load(Ordering::SeqCst), 0);
                 assert!(roto_values_auto(&mask(Backend::Gpu), SMALL).iter().all(|v| *v == 0.5), "GPU: the accelerator's answer");
                 assert_eq!(fake.calls.load(Ordering::SeqCst), 1);
@@ -132,11 +154,11 @@ mod tests {
             |n| Some(vec![0.5; n]),
             |fake| {
                 let calls = || fake.calls.load(Ordering::SeqCst);
-                assert!(roto_values_auto(&blurred(Backend::Auto, true), SMALL).iter().all(|v| *v == 0.0));
+                assert!(roto_values_auto(&blurred(Backend::Auto, true), SMALL).iter().all(|v| *v == 1.0));
                 assert_eq!(calls(), 0, "too small to repay a GPU round trip");
-                assert!(roto_values_auto(&mask(Backend::Auto), BIG).iter().all(|v| *v == 0.0));
+                assert!(roto_values_auto(&mask(Backend::Auto), BIG).iter().all(|v| *v == 1.0));
                 assert_eq!(calls(), 0, "big but nothing is blurred: the GPU is no faster");
-                assert!(roto_values_auto(&blurred(Backend::Auto, false), BIG).iter().all(|v| *v == 0.0));
+                assert!(roto_values_auto(&blurred(Backend::Auto, false), BIG).iter().all(|v| *v == 1.0));
                 assert_eq!(calls(), 0, "a hidden blurred shape does not count");
                 assert!(roto_values_auto(&blurred(Backend::Auto, true), BIG).iter().all(|v| *v == 0.5));
                 assert_eq!(calls(), 1, "big and blurred");
@@ -178,5 +200,20 @@ mod tests {
         for b in [Backend::Auto, Backend::Cpu, Backend::Gpu] {
             assert_eq!(roto_values_auto(&mask(b), SMALL), roto_values(&mask(b), SMALL));
         }
+    }
+
+    #[test]
+    fn the_editing_layer_is_process_wide_state_with_one_owner() {
+        use photocraft_doc::LayerId;
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        set_editing_layer(None);
+        assert_eq!(editing_layer(), None);
+        assert!(!is_editing(LayerId(7)));
+        set_editing_layer(Some(LayerId(7)));
+        assert!(is_editing(LayerId(7)) && !is_editing(LayerId(8)));
+        set_editing_layer(Some(LayerId(8)));
+        assert!(is_editing(LayerId(8)) && !is_editing(LayerId(7)), "one layer at a time");
+        set_editing_layer(None);
+        assert_eq!(editing_layer(), None);
     }
 }

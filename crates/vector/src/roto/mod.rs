@@ -12,5 +12,5 @@ mod tests;
 
 pub use blend::blend;
 pub use blur::box_radius;
-pub use dispatch::{AUTO_MIN_PIXELS, Accelerator, has_accelerator, roto_values_auto, set_accelerator};
+pub use dispatch::{AUTO_MIN_PIXELS, Accelerator, editing_layer, has_accelerator, is_editing, roto_values_auto, set_accelerator, set_editing_layer};
 pub use eval::{CpuExecutor, Executor, MAX_PIXELS, prepare, roto_values, run};
