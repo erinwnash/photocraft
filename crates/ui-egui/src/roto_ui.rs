@@ -138,6 +138,10 @@ pub struct RotoUi {
     /// Make Selection evaluates each spline on its own and unions them (ignoring blend ops).
     #[serde(default)]
     pub selection_each: bool,
+    /// Apply the mask to the layer while the Roto tool is active. Off (the default) the layer is
+    /// shown unmasked, so the image never disappears while points are placed.
+    #[serde(default)]
+    pub apply_while_editing: bool,
     #[serde(skip)]
     matte: Matte,
     /// The layer this app put in the editing view. The view is process-wide state, so the app only
@@ -283,6 +287,14 @@ pub fn is_enabled(app: &PhotocraftApp, id: &str) -> Option<bool> {
     handles(id).then(|| point_targets(app).is_some())
 }
 
+/// Right-click menu on the canvas: adds roto shapes that follow the selection to the active layer.
+pub fn selection_to_shapes(app: &mut PhotocraftApp) {
+    if let Err(e) = app.run("roto.selection.to_shapes", json!({})) {
+        app.ui.status = e;
+        app.ui.status_error = true;
+    }
+}
+
 /// Runs the engine command behind a point command on the current selection.
 fn point_op(app: &mut PhotocraftApp, engine_cmd: &str) -> Result<Value, String> {
     let (shape, ids) = point_targets(app).ok_or_else(|| tl!("Select points (or a shape in the Roto panel) first").to_string())?;
@@ -349,11 +361,11 @@ pub(crate) fn matte_image(mask: &RotoMask, w: u32, h: u32, max_side: u32) -> ([u
 }
 
 /// Keeps the editing view in step with the tool: while the Roto tool is active on a layer that has
-/// an enabled roto mask and the user has switched the mask overlay on, that mask is not applied to
-/// the layer, so the whole image stays visible, and it is drawn as a red overlay instead. Called
-/// every frame, before the canvas draws.
+/// an enabled roto mask (and the user has not asked to apply it while editing), that mask is not
+/// applied to the layer, so the whole image stays visible. With "Show mask overlay" ticked it is
+/// drawn as a red overlay over the image. Called every frame, before the canvas draws.
 pub fn sync_view(app: &mut PhotocraftApp, ctx: &egui::Context) {
-    let wanted = (app.ui.tool == Tool::Roto && app.ui.roto.matte_overlay).then(|| active(app).filter(|(_, m)| m.enabled).map(|(id, _)| id)).flatten();
+    let wanted = (app.ui.tool == Tool::Roto && !app.ui.roto.apply_while_editing).then(|| active(app).filter(|(_, m)| m.enabled).map(|(id, _)| id)).flatten();
     let owned = app.ui.roto.view_layer;
     if wanted != owned {
         // End the view this app started (the layer may be gone or in another document: then the
@@ -374,6 +386,11 @@ pub fn sync_view(app: &mut PhotocraftApp, ctx: &egui::Context) {
         app.ui.roto.matte = Matte::default();
         return;
     };
+    // The red overlay is optional: without it the unmasked layer is all there is to see.
+    if !app.ui.roto.matte_overlay {
+        app.ui.roto.matte = Matte::default();
+        return;
+    }
     let Some(size) = app.session.active().map(|st| st.doc.size) else { return };
     let max_side = if app.ui.roto.gesture.is_some() { MATTE_DRAG_SIDE } else { MATTE_IDLE_SIDE };
     let key = {
@@ -822,6 +839,7 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
         app.ui.roto.hide_feather = !show;
     }
     crate::widgets::vline(ui, 22.0);
+    crate::widgets::checkbox(ui, &mut app.ui.roto.apply_while_editing, tl!("Apply mask while editing"));
     crate::widgets::checkbox(ui, &mut app.ui.roto.matte_overlay, tl!("Show mask overlay"));
     crate::widgets::vline(ui, 22.0);
     let hint = match app.ui.roto.mode {

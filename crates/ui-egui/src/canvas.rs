@@ -1471,6 +1471,20 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
         let resizing = crate::brush_resize::draw(app, &painter, &xf);
         draw_transform_controls(app, &painter, &xf);
         crate::paint_mouse::show_picker(app, &ctx);
+        // Right-click with a selection: turn it into roto shapes on the active layer (tools whose
+        // right button opens the Brush Preset picker keep that).
+        if doc.selection.is_some() && !crate::paint_mouse::has_brush_picker(tool) {
+            let mut to_roto = false;
+            response.context_menu(|ui| {
+                if ui.button(tl!("Add Roto Shape from Selection")).clicked() {
+                    to_roto = true;
+                    ui.close();
+                }
+            });
+            if to_roto {
+                crate::roto_ui::selection_to_shapes(app);
+            }
+        }
         crate::snap_ui::draw(app, &painter, &xf);
         if border == photocraft_engine::prefs::CanvasBorder::Line {
             painter.rect_stroke(img_rect, 0.0, Stroke::new(1.0, Color32::from_gray(20)), egui::StrokeKind::Outside);

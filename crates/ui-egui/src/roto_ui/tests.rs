@@ -320,25 +320,25 @@ fn frame(a: &mut PhotocraftApp, ctx: &egui::Context) {
 }
 
 #[test]
-fn the_mask_overlay_is_off_by_default_and_follows_the_tool_and_the_layer_when_on() {
+fn the_image_stays_visible_while_editing_and_the_overlay_is_optional() {
     let _g = VIEW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     vector::roto::set_editing_layer(None);
     let ctx = egui::Context::default();
     let mut a = app();
     let layer = a.session.active().unwrap().active_layer.unwrap();
-    assert!(!a.ui.roto.matte_overlay, "off by default");
-    // Drawing the first shape with the overlay off: the mask applies as you go, no editing view.
-    a.ui.roto.mode = RotoMode::Rectangle;
-    drag(&mut a, [40.0, 40.0], [120.0, 100.0], Modifiers::NONE);
+    assert!(!a.ui.roto.matte_overlay && !a.ui.roto.apply_while_editing, "both off by default");
+    // Drawing the first points: the mask is not applied, so the image never disappears.
+    a.ui.roto.mode = RotoMode::Pen;
+    click(&mut a, [40.0, 40.0], Modifiers::NONE);
     frame(&mut a, &ctx);
-    assert_eq!(editing(), None);
-    assert!(a.ui.roto.matte.tex.is_none(), "no overlay is built");
-    // Tick "Show mask overlay": the image shows through, with the mask drawn over it.
+    assert_eq!(editing(), Some(layer));
+    assert!(a.ui.roto.matte.tex.is_none(), "no red overlay unless asked for");
+    // Tick "Show mask overlay": the mask is drawn over the image.
     a.ui.roto.matte_overlay = true;
     frame(&mut a, &ctx);
     assert_eq!(editing(), Some(layer));
     assert!(a.ui.roto.matte.tex.is_some());
-    // Another tool: the mask applies to the layer again, whatever the checkbox says.
+    // Another tool: the mask applies to the layer again.
     a.ui.tool = Tool::Brush;
     frame(&mut a, &ctx);
     assert_eq!(editing(), None);
@@ -346,11 +346,11 @@ fn the_mask_overlay_is_off_by_default_and_follows_the_tool_and_the_layer_when_on
     a.ui.tool = Tool::Roto;
     frame(&mut a, &ctx);
     assert_eq!(editing(), Some(layer));
-    // Unticking it applies the mask again.
-    a.ui.roto.matte_overlay = false;
+    // "Apply mask while editing" applies it live.
+    a.ui.roto.apply_while_editing = true;
     frame(&mut a, &ctx);
     assert_eq!(editing(), None);
-    a.ui.roto.matte_overlay = true;
+    a.ui.roto.apply_while_editing = false;
     // A disabled mask is not applied, so there is nothing to see through.
     a.run("roto.instance.set", json!({"enabled": false})).unwrap();
     frame(&mut a, &ctx);
@@ -688,4 +688,20 @@ fn the_selection_command_uses_the_panel_node_or_all_splines_and_each_spline_opti
     let mut empty = app();
     assert!(!crate::menus::is_enabled(&empty, "roto.selectionFromMask"));
     assert!(crate::menus::invoke(&mut empty, &ctx, "roto.selectionFromMask", json!({})).is_err());
+}
+
+#[test]
+fn the_right_click_action_adds_roto_shapes_following_the_selection() {
+    let mut a = app();
+    a.run("select.rect", json!({"x": 50, "y": 60, "width": 80, "height": 40})).unwrap();
+    selection_to_shapes(&mut a);
+    assert!(!a.ui.status_error, "{}", a.ui.status);
+    let sh = shapes(&a);
+    assert_eq!(sh.len(), 1);
+    let xs: Vec<f64> = sh[0].points.iter().map(|p| p.pos.x).collect();
+    assert!(xs.iter().cloned().fold(f64::MAX, f64::min) >= 49.0 && xs.iter().cloned().fold(f64::MIN, f64::max) <= 131.0);
+    // Without a selection it says why instead of doing anything.
+    let mut b = app();
+    selection_to_shapes(&mut b);
+    assert!(b.ui.status_error);
 }

@@ -33,6 +33,11 @@ fn has_layer(s: &Session) -> std::result::Result<(), String> {
     d.active_layer.filter(|id| d.doc.layer(*id).is_some()).map(|_| ()).ok_or_else(|| "no active layer".into())
 }
 
+fn has_selection_and_layer(s: &Session) -> std::result::Result<(), String> {
+    has_layer(s)?;
+    s.active().filter(|d| d.doc.selection.is_some()).map(|_| ()).ok_or_else(|| "no selection".into())
+}
+
 fn has_roto(s: &Session) -> std::result::Result<(), String> {
     has_layer(s)?;
     let d = s.active().ok_or("no document open")?;
@@ -973,6 +978,91 @@ fn make_selection(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({ "selected": selected, "shapes": ids.len() }))
 }
 
+/// Most shapes one selection may become: a speckled selection would otherwise bury the mask.
+const MAX_SELECTION_SHAPES: usize = 500;
+
+/// Even-odd point in polygon.
+fn inside_polygon(poly: &[(f64, f64)], (px, py): (f64, f64)) -> bool {
+    let mut inside = false;
+    for (i, &(x1, y1)) in poly.iter().enumerate() {
+        let (x2, y2) = poly.get((i + 1) % poly.len()).copied().unwrap_or((x1, y1));
+        if (y1 > py) != (y2 > py) && px < (x2 - x1) * (py - y1) / (y2 - y1) + x1 {
+            inside = !inside;
+        }
+    }
+    inside
+}
+
+/// Adds bezier shapes that follow the document selection's outline to the layer's roto mask
+/// (creating the mask when the layer has none). Each region becomes a shape; holes (and islands
+/// inside holes, and so on) alternate Subtract and Union so the mask has the selection's shape.
+/// Several shapes are put in one group.
+fn selection_to_shapes(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "roto.selection.to_shapes";
+    let id = layer_id(s, p)?;
+    let tolerance = opt_f64(CMD, p, "tolerance")?.unwrap_or(2.0).clamp(0.5, 10.0);
+    let d = s.active().ok_or(EngineError::NoDocument)?;
+    let area = d.doc.bounds();
+    if d.doc.selection.is_none() {
+        return Err(bad(CMD, "there is no selection"));
+    }
+    let values = photocraft_algo::selection::mask_from_surface(d.doc.selection.as_ref(), area);
+    let path = vector::trace::trace_mask(&values, area, 0.0, tolerance);
+    if path.subpaths.is_empty() {
+        return Err(bad(CMD, "the selection has no outline"));
+    }
+    if path.subpaths.len() > MAX_SELECTION_SHAPES {
+        return Err(bad(
+            CMD,
+            format!("the selection has {} separate outlines (at most {MAX_SELECTION_SHAPES}); smooth it or raise `tolerance`", path.subpaths.len()),
+        ));
+    }
+    let polys: Vec<Vec<(f64, f64)>> = path.subpaths.iter().map(|sp| sp.knots.iter().map(|k| (k.anchor.x, k.anchor.y)).collect()).collect();
+    let mut order: Vec<(usize, usize)> = (0..polys.len())
+        .map(|i| {
+            let probe = polys[i].first().copied().unwrap_or((0.0, 0.0));
+            (polys.iter().enumerate().filter(|(j, poly)| *j != i && poly.len() >= 3 && inside_polygon(poly, probe)).count(), i)
+        })
+        .collect();
+    order.sort_unstable();
+    let prefix = p.get("name").and_then(Value::as_str).unwrap_or("Selection").to_string();
+    let created = s.edit("Roto Shapes from Selection", |doc, _| {
+        let l = doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?;
+        if l.locks.all {
+            return Err(EngineError::Other(format!("layer \"{}\" is locked", l.name)));
+        }
+        let m = l.roto_mask.get_or_insert_with(RotoMask::default);
+        let mut ids = Vec::new();
+        for (n, (depth, i)) in order.iter().enumerate() {
+            let Some(sp) = path.subpaths.get(*i).filter(|sp| sp.knots.len() >= 3) else { continue };
+            let nid = m.next_node_id();
+            let first_point = m.next_point_id().0;
+            let mut shape = Shape::new(nid, &format!("{prefix} {}", n + 1));
+            shape.closed = true;
+            if depth % 2 == 1 {
+                shape.blend_op = BlendOp::Subtract;
+            }
+            for (next, k) in (first_point..).zip(sp.knots.iter()) {
+                let mut pt = Point::corner(PointId(next), k.anchor.x, k.anchor.y);
+                pt.tangent_in = V2::new(k.in_ctrl.x - k.anchor.x, k.in_ctrl.y - k.anchor.y);
+                pt.tangent_out = V2::new(k.out_ctrl.x - k.anchor.x, k.out_ctrl.y - k.anchor.y);
+                pt.smooth = k.smooth;
+                shape.points.push(pt);
+            }
+            let root = m.root.id;
+            m.insert(root, None, Node::Shape(shape)).map_err(|e| rerr(CMD, e))?;
+            ids.push(nid);
+        }
+        if ids.is_empty() {
+            return Err(bad(CMD, "the selection has no usable outline"));
+        }
+        let group = if ids.len() > 1 { Some(m.group(&ids, &prefix).map_err(|e| rerr(CMD, e))?.0) } else { None };
+        m.validate().map_err(|e| rerr(CMD, e))?;
+        Ok((ids.iter().map(|i| i.0).collect::<Vec<_>>(), group))
+    })?;
+    Ok(json!({ "shapes": created.0, "group": created.1 }))
+}
+
 // ---------------------------------------------------------------------------
 // Feather
 // ---------------------------------------------------------------------------
@@ -1368,6 +1458,14 @@ pub fn specs() -> Vec<CommandSpec> {
             r##"{"layer":id?,"node":id|0? (0/omitted = all splines together; a group or a shape id = just that),"each":bool=false (evaluate every spline on its own and union them, ignoring blend ops),"mode":"replace|add|subtract|intersect"} → {selected,shapes}"##,
             has_roto,
             make_selection
+        ),
+        spec!(
+            "roto.selection.to_shapes",
+            "Roto Shapes from Selection",
+            [],
+            r##"{"layer":id?,"tolerance":px=2 (0.5..10),"name":str="Selection"} → {shapes:[id…],group:id|null}. Adds bezier shapes following the selection's outline to the layer's roto mask (creating it if needed); holes become Subtract shapes"##,
+            has_selection_and_layer,
+            selection_to_shapes
         ),
         spec!(
             "roto.node.transform",

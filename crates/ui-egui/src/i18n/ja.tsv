@@ -2014,3 +2014,5 @@
 	Each spline	スプラインごと
 	Make a selection from the node chosen in the Roto panel, or from all the splines	ロトパネルで選んだノード、またはすべてのスプラインから選択範囲を作成します
 	Selection from Roto Mask	ロトマスクから選択範囲を作成
+	Add Roto Shape from Selection	選択範囲からロトシェイプを追加
+	Apply mask while editing	編集中にマスクを適用

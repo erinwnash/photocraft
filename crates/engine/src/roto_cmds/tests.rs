@@ -690,3 +690,23 @@ fn selection_from_roto_rejects_bad_input_and_changes_nothing() {
     }
     assert!(s.active().unwrap().doc.selection.is_none());
 }
+
+#[test]
+fn a_selection_becomes_roto_shapes_that_reproduce_it_holes_included() {
+    let mut s = session(100, 100);
+    assert!(s.execute("roto.selection.to_shapes", json!({})).is_err(), "no selection");
+    // A 60x60 square with a 20x20 hole, plus a separate 10x10 island.
+    s.execute("select.rect", json!({"x": 10, "y": 10, "width": 60, "height": 60})).unwrap();
+    s.execute("select.rect", json!({"x": 30, "y": 30, "width": 20, "height": 20, "mode": "subtract"})).unwrap();
+    s.execute("select.rect", json!({"x": 80, "y": 80, "width": 10, "height": 10, "mode": "add"})).unwrap();
+    let want = selection_values(&s);
+    let r = s.execute("roto.selection.to_shapes", json!({})).unwrap();
+    assert_eq!(r["shapes"].as_array().unwrap().len(), 3);
+    assert!(r["group"].is_u64());
+    let m = mask(&s);
+    let got = vector::roto::roto_values(&m, Rect::new(0, 0, 100, 100));
+    let diff: f64 = got.iter().zip(&want).map(|(a, b)| f64::from((a - b).abs())).sum();
+    assert!(diff < 100.0, "the shapes follow the selection (diff {diff})");
+    undo(&mut s);
+    assert!(s.active().unwrap().doc.layer(s.active().unwrap().active_layer.unwrap()).unwrap().roto_mask.is_none(), "undo removes the mask it created");
+}
