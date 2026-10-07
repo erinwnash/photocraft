@@ -457,13 +457,14 @@ fn handles_of(a: &PhotocraftApp, shape: usize, point: usize) -> (V2, V2, bool) {
 fn point_commands_act_on_the_selected_points_through_the_menu() {
     let ctx = egui::Context::default();
     let mut a = with_rect();
-    // Nothing selected: disabled, and invoking says why without touching anything.
-    let before = mask(&a);
+    // No shape at all: disabled, and invoking says why without touching anything.
+    let mut empty = app();
     for id in POINT_COMMANDS {
-        assert!(!crate::menus::is_enabled(&a, id), "{id}");
-        assert!(crate::menus::invoke(&mut a, &ctx, id, json!({})).is_err(), "{id}");
+        assert!(!crate::menus::is_enabled(&empty, id), "{id}");
+        assert!(crate::menus::invoke(&mut empty, &ctx, id, json!({})).is_err(), "{id}");
     }
-    assert_eq!(mask(&a), before);
+    // Nothing selected but a shape exists: it is acted on whole.
+    assert!(crate::menus::is_enabled(&a, "roto.cuspPoints"));
 
     // Two points selected: Smooth builds their handles and leaves the others alone.
     click(&mut a, [20.0, 20.0], Modifiers::NONE);
@@ -554,4 +555,70 @@ fn the_options_bar_has_the_point_buttons_and_the_overlay_checkbox_unticked() {
     assert_eq!(point_texts("roto.cuspPoints").0, "Cusp");
     assert_eq!(point_texts("roto.uncuspPoints").0, "Uncusp");
     assert_eq!(point_texts("roto.smoothPoints").0, "Smooth");
+}
+
+#[test]
+fn point_buttons_act_on_the_whole_shape_when_no_points_are_selected() {
+    let mut a = app();
+    a.ui.roto.mode = RotoMode::Pen;
+    for p in [[40.0, 40.0], [160.0, 40.0], [160.0, 160.0], [40.0, 160.0]] {
+        click(&mut a, p, Modifiers::NONE);
+    }
+    // Still drawing: only the last point is selected, so only it is smoothed.
+    menu(&mut a, "roto.smoothPoints", &json!({})).unwrap().unwrap();
+    assert_eq!(shapes(&a)[0].points.iter().filter(|p| p.smooth).count(), 1);
+    // Nothing selected (Select mode, empty selection): the newest shape, whole.
+    a.ui.roto.mode = RotoMode::Select;
+    a.ui.roto.drawing = None;
+    a.ui.roto.sel.clear();
+    assert_eq!(is_enabled(&a, "roto.cuspPoints"), Some(true));
+    menu(&mut a, "roto.cuspPoints", &json!({})).unwrap().unwrap();
+    assert!(shapes(&a)[0].points.iter().all(|p| !p.smooth));
+    menu(&mut a, "roto.smoothPoints", &json!({})).unwrap().unwrap();
+    assert!(shapes(&a)[0].points.iter().all(|p| p.smooth && p.tangent_out != V2::ZERO));
+}
+
+#[test]
+fn enter_finishes_the_pen_shape_and_selects_all_its_points() {
+    let ctx = egui::Context::default();
+    let mut a = app();
+    a.ui.roto.mode = RotoMode::Pen;
+    for p in [[40.0, 40.0], [160.0, 40.0], [160.0, 160.0]] {
+        click(&mut a, p, Modifiers::NONE);
+    }
+    let raw = egui::RawInput {
+        events: vec![egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE }],
+        ..Default::default()
+    };
+    let mut out = ctx.run_ui(raw, |ui| assert!(keys(&mut a, ui.ctx())));
+    out.textures_delta.clear();
+    assert_eq!(a.ui.roto.drawing, None);
+    assert_eq!(a.ui.roto.sel.points.len(), 3);
+}
+
+#[test]
+fn clicking_the_smooth_button_smooths_the_selected_point() {
+    use egui_kittest::kittest::Queryable;
+    let mut a = with_rect();
+    click(&mut a, [20.0, 20.0], Modifiers::NONE);
+    let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1400.0, 60.0)).build_ui_state(
+        |ui, app: &mut PhotocraftApp| {
+            // Fonts take effect on the next frame: set them up and draw nothing this one.
+            if !ui.ctx().data(|d| d.get_temp::<bool>(egui::Id::new("fonts")).unwrap_or(false)) {
+                PhotocraftApp::setup_context(ui.ctx(), Default::default());
+                ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("fonts"), true));
+                return;
+            }
+            ui.horizontal(|ui| {
+                options_bar(app, ui, Tool::Roto);
+            });
+        },
+        a,
+    );
+    h.run_steps(3);
+    h.get_by_label("Smooth").click();
+    h.run_steps(3);
+    let a = h.state();
+    eprintln!("status {:?} err {}", a.ui.status, a.ui.status_error);
+    assert!(shapes(a)[0].points[0].smooth, "button click smoothed the point");
 }

@@ -247,15 +247,18 @@ pub fn handles(id: &str) -> bool {
     POINT_OPS.iter().any(|o| o.0 == id)
 }
 
-/// What the point commands act on: the selected points, else every point of the shape selected in
-/// the Roto panel. `None` when nothing suitable is selected.
+/// What the point commands act on: the selected points, else every point of a shape: the one the
+/// selection or the Roto panel names, the one being drawn, or the newest shape. `None` when the
+/// mask has no shape.
 fn point_targets(app: &PhotocraftApp) -> Option<(NodeId, Option<Vec<PointId>>)> {
     let (_, m) = active(app)?;
     let sel = &app.ui.roto.sel;
     if let Some(shape) = sel.shape.filter(|_| !sel.points.is_empty()) {
         return Some((shape, Some(sel.points.clone())));
     }
-    let shape = app.ui.roto.nodes.first().copied().filter(|id| matches!(m.find(*id), Some(Node::Shape(_))))?;
+    let is_shape = |id: &NodeId| matches!(m.find(*id), Some(Node::Shape(_)));
+    let newest = m.root.children.iter().rev().find_map(|n| if let Node::Shape(s) = n { Some(s.id) } else { None });
+    let shape = sel.shape.filter(is_shape).or(app.ui.roto.nodes.first().copied().filter(is_shape)).or(app.ui.roto.drawing.filter(is_shape)).or(newest)?;
     Some((shape, None))
 }
 
@@ -618,6 +621,11 @@ pub fn keys(app: &mut PhotocraftApp, ctx: &egui::Context) -> bool {
     }
     let pressed = |k: egui::Key, m: Modifiers| ctx.input_mut(|i| i.consume_key(m, k));
     if app.ui.roto.drawing.is_some() && (pressed(egui::Key::Enter, Modifiers::NONE) || pressed(egui::Key::Escape, Modifiers::NONE)) {
+        // The finished shape is selected whole, so Smooth and Cusp act on all of its points.
+        if let Some((id, Some((_, m)))) = app.ui.roto.drawing.map(|id| (id, active(app))) {
+            let all = shape_points(m, id);
+            app.ui.roto.sel.set(id, all, false);
+        }
         app.ui.roto.drawing = None;
         return true;
     }
