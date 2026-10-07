@@ -35,6 +35,7 @@ pub mod bounds;
 mod fx;
 pub mod health;
 pub mod plan;
+pub mod roto;
 
 use std::collections::HashMap;
 use std::num::NonZeroU64;

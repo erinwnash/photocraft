@@ -34,8 +34,18 @@ pub fn has_accelerator() -> bool {
 }
 
 /// `Backend::Auto` uses the accelerator from this many pixels up (below it a round trip to the
-/// GPU costs more than the CPU takes).
+/// GPU costs more than the CPU takes) and only when some shape is blurred: measured on a 4K frame,
+/// the accelerator is about 10x faster than the CPU for blur and no faster without it, because
+/// shape geometry stays on the CPU for both backends.
 pub const AUTO_MIN_PIXELS: usize = 1 << 20;
+
+fn has_blur(g: &photocraft_doc::roto::Group) -> bool {
+    use photocraft_doc::roto::Node;
+    g.children.iter().any(|n| match n {
+        Node::Shape(s) => s.visible && s.blur > 0.0,
+        Node::Group(c) => c.visible && has_blur(c),
+    })
+}
 
 /// Coverage of `m` over `rect`, on the accelerator when `m.backend` and the size call for it and
 /// one is registered and succeeds, otherwise on the CPU ([`roto_values`]).
@@ -44,7 +54,7 @@ pub fn roto_values_auto(m: &RotoMask, rect: Rect) -> Vec<f32> {
     let wanted = match m.backend {
         Backend::Cpu => false,
         Backend::Gpu => true,
-        Backend::Auto => pixels >= AUTO_MIN_PIXELS,
+        Backend::Auto => pixels >= AUTO_MIN_PIXELS && has_blur(&m.root),
     };
     if wanted && prepare(m, rect).is_ok() {
         let accel = ACCELERATOR.read().ok().and_then(|g| g.clone());
@@ -106,15 +116,30 @@ mod tests {
         );
     }
 
+    fn blurred(backend: Backend, visible: bool) -> RotoMask {
+        use photocraft_doc::roto::{Node, NodeId, Shape};
+        let mut s = Shape::new(NodeId(1), "s");
+        s.blur = 8.0;
+        s.visible = visible;
+        let mut m = mask(backend);
+        m.root.children.push(Node::Shape(s));
+        m
+    }
+
     #[test]
-    fn auto_uses_it_only_for_big_masks() {
+    fn auto_uses_it_only_for_big_masks_that_blur() {
         with_fake(
             |n| Some(vec![0.5; n]),
             |fake| {
-                assert!(roto_values_auto(&mask(Backend::Auto), SMALL).iter().all(|v| *v == 0.0));
-                assert_eq!(fake.calls.load(Ordering::SeqCst), 0, "too small to repay a GPU round trip");
-                assert!(roto_values_auto(&mask(Backend::Auto), BIG).iter().all(|v| *v == 0.5));
-                assert_eq!(fake.calls.load(Ordering::SeqCst), 1);
+                let calls = || fake.calls.load(Ordering::SeqCst);
+                assert!(roto_values_auto(&blurred(Backend::Auto, true), SMALL).iter().all(|v| *v == 0.0));
+                assert_eq!(calls(), 0, "too small to repay a GPU round trip");
+                assert!(roto_values_auto(&mask(Backend::Auto), BIG).iter().all(|v| *v == 0.0));
+                assert_eq!(calls(), 0, "big but nothing is blurred: the GPU is no faster");
+                assert!(roto_values_auto(&blurred(Backend::Auto, false), BIG).iter().all(|v| *v == 0.0));
+                assert_eq!(calls(), 0, "a hidden blurred shape does not count");
+                assert!(roto_values_auto(&blurred(Backend::Auto, true), BIG).iter().all(|v| *v == 0.5));
+                assert_eq!(calls(), 1, "big and blurred");
             },
         );
     }

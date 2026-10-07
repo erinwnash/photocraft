@@ -127,6 +127,11 @@ impl GpuCanvas {
         res.health = health.clone();
         rs.renderer.write().callback_resources.insert(res);
         log::info!("gpu canvas: target {:?}, max texture {max}, tile {tile}, 16F canvas {high:?}", rs.target_format);
+        // Roto masks with a blur evaluate faster here (RotoMask::backend decides, and any failure
+        // falls back to the CPU). PHOTOCRAFT_CPU_COMPOSE turns every GPU path off.
+        if std::env::var_os("PHOTOCRAFT_CPU_COMPOSE").is_none() && !photocraft_vector::roto::has_accelerator() {
+            photocraft_vector::roto::set_accelerator(Some(std::sync::Arc::new(photocraft_gpu::roto::RotoGpu::new(rs.device.clone(), rs.queue.clone()))));
+        }
         Self { rs: rs.clone(), tile, high, health }
     }
 
