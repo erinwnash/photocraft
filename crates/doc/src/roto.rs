@@ -732,19 +732,23 @@ impl Shape {
     }
 
     /// Cusp: turns bezier points into square (corner) points: both handles are retracted into the
-    /// point and the link between them is gone. Returns how many points were picked.
+    /// point and the link between them is gone; the feather point loses its handles too. Returns how many points were picked.
     pub fn cusp_points(&mut self, ids: Option<&[PointId]>) -> usize {
         let mut n = 0;
         for p in self.points.iter_mut().filter(|p| Self::picks(ids, p)) {
             p.tangent_in = V2::ZERO;
             p.tangent_out = V2::ZERO;
+            // The feather point is cusped with it: its handles are the point's plus these.
+            p.feather_in = V2::ZERO;
+            p.feather_out = V2::ZERO;
             p.smooth = false;
             n += 1;
         }
         n
     }
 
-    /// Smooth: replaces the picked points' handles with ones that average the directions of the
+    /// Smooth: replaces the picked points' handles (and resets their feather point's own handles, so
+    /// it follows the point again) with ones that average the directions of the
     /// points around them, so the curve flows through each point without a kink (usually used on a
     /// group of points, or on a single point, and on a square point it turns it into a bezier point). The rule is a cubic Hermite spline's, applied to x and y separately along
     /// the chord length between points: the slope at a point is the central difference of its
@@ -760,6 +764,10 @@ impl Shape {
             if Self::picks(ids, p) {
                 p.tangent_out = out;
                 p.tangent_in = inn;
+                // Any edits to the feather point's own bezier are dropped: it matches the curve
+                // of its source point again.
+                p.feather_in = V2::ZERO;
+                p.feather_out = V2::ZERO;
                 p.smooth = true;
                 n += 1;
             }
@@ -1183,6 +1191,26 @@ mod tests {
         assert_eq!(s.points.iter().map(|p| p.tangent_out == V2::ZERO && p.tangent_in == V2::ZERO).collect::<Vec<_>>(), vec![false, true, true, false]);
         assert_eq!(s.cusp_points(None), 4, "no ids means every point");
         assert!(s.points.iter().all(|p| !p.smooth && p.tangent_out == V2::ZERO && p.tangent_in == V2::ZERO));
+    }
+
+    #[test]
+    fn cusp_and_smooth_reset_the_feather_bezier_to_follow_the_source_point() {
+        let mut s = square_shape();
+        for p in &mut s.points {
+            p.feather_pos = v(0.0, -8.0);
+            p.feather_in = v(1.0, 2.0);
+            p.feather_out = v(-3.0, 4.0);
+            p.tangent_out = v(10.0, 0.0);
+            p.tangent_in = v(-10.0, 0.0);
+            p.smooth = true;
+        }
+        s.cusp_points(Some(&[PointId(1)]));
+        assert_eq!((s.points[0].feather_in, s.points[0].feather_out), (V2::ZERO, V2::ZERO), "a cusped point's feather point has no handle");
+        assert_eq!(s.points[0].feather_pos, v(0.0, -8.0), "the feather point itself stays");
+        assert_eq!(s.points[1].feather_in, v(1.0, 2.0), "other points are untouched");
+        s.smooth_points(Some(&[PointId(2)]));
+        assert_eq!((s.points[1].feather_in, s.points[1].feather_out), (V2::ZERO, V2::ZERO), "smooth resets the feather bezier");
+        assert_eq!(s.points[2].feather_out, v(-3.0, 4.0));
     }
 
     #[test]

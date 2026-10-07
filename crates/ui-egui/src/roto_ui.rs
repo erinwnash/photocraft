@@ -69,6 +69,8 @@ enum Handle {
     TangentIn,
     TangentOut,
     Feather,
+    FeatherIn,
+    FeatherOut,
 }
 
 /// A drag in progress.
@@ -456,10 +458,16 @@ fn select_down(app: &mut PhotocraftApp, p: P2, mods: Modifiers) {
                     _ => Plan::Select(s),
                 }
             }
-            Hit::TangentIn { shape, point } | Hit::TangentOut { shape, point } | Hit::Feather { shape, point } => {
+            Hit::TangentIn { shape, point }
+            | Hit::TangentOut { shape, point }
+            | Hit::Feather { shape, point }
+            | Hit::FeatherIn { shape, point }
+            | Hit::FeatherOut { shape, point } => {
                 let which = match edit::hit_test(&views, sel, p, tol) {
                     Hit::TangentIn { .. } => Handle::TangentIn,
                     Hit::TangentOut { .. } => Handle::TangentOut,
+                    Hit::FeatherIn { .. } => Handle::FeatherIn,
+                    Hit::FeatherOut { .. } => Handle::FeatherOut,
                     _ => Handle::Feather,
                 };
                 match (edit::view_of_shape(m, shape), local_pos(m, shape, point)) {
@@ -573,6 +581,9 @@ pub fn moved(app: &mut PhotocraftApp, x: f64, y: f64) {
                 Handle::TangentIn => edit::tangent_params(shape, point, false, p, &affine, local_pos, &key),
                 Handle::TangentOut => edit::tangent_params(shape, point, true, p, &affine, local_pos, &key),
                 Handle::Feather => edit::feather_params(shape, point, p, &affine, local_pos, &key),
+                Handle::FeatherIn | Handle::FeatherOut => {
+                    active(app).and_then(|(_, m)| edit::feather_tangent_params(m, shape, point, which == Handle::FeatherOut, p, &affine, &key))
+                }
             };
             if let Some(params) = params {
                 run(app, if which == Handle::Feather { "roto.feather.set_point" } else { "roto.point.set" }, params);
@@ -758,6 +769,17 @@ pub fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform
                         ));
                     } else if tip != p.pos {
                         painter.circle_filled(t, 3.0, SELECTED);
+                    }
+                }
+                // The feather point's own bezier handles, from the feather point.
+                if let Some(f) = p.feather {
+                    let fc = to_screen(xf, f);
+                    for tip in [p.feather_in, p.feather_out] {
+                        if tip != f {
+                            let t = to_screen(xf, tip);
+                            painter.line_segment([fc, t], Stroke::new(1.0, FEATHER));
+                            painter.circle_filled(t, 2.5, FEATHER);
+                        }
                     }
                 }
             } else if let Some(f) = p.feather {

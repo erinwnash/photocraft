@@ -715,3 +715,25 @@ fn the_panel_exports_the_roto_as_a_work_path() {
     let d = a.session.active().unwrap();
     assert_eq!(d.doc.work_path.as_ref().map(|p| p.subpaths.len()), Some(1));
 }
+
+#[test]
+fn dragging_a_feather_handle_edits_the_feather_bezier_alone_and_smooth_resets_it() {
+    let mut a = with_rect();
+    let sh = shapes(&a)[0].id;
+    let p0 = shapes(&a)[0].points[0].id;
+    a.run("roto.point.smooth", json!({"shape": sh.0})).unwrap();
+    a.run("roto.feather.set_point", json!({"shape": sh.0, "id": p0.0, "offset": [-12, -12]})).unwrap();
+    click(&mut a, [20.0, 20.0], Modifiers::NONE);
+    let own = shapes(&a)[0].points[0];
+    // The feather out handle's tip: feather point + the point's own out handle.
+    let tip = [20.0 - 12.0 + own.tangent_out.x, 20.0 - 12.0 + own.tangent_out.y];
+    drag(&mut a, tip, [tip[0] + 5.0, tip[1] + 9.0], Modifiers::NONE);
+    let q = shapes(&a)[0].points[0];
+    assert_eq!((q.tangent_in, q.tangent_out), (own.tangent_in, own.tangent_out), "the point's own handles are untouched");
+    assert!((q.feather_out.x - 5.0).abs() < 1e-6 && (q.feather_out.y - 9.0).abs() < 1e-6, "{:?}", q.feather_out);
+    assert_eq!(q.feather_pos, V2::new(-12.0, -12.0));
+    // Smooth on the source point puts it back.
+    menu(&mut a, "roto.smoothPoints", &json!({})).unwrap().unwrap();
+    let r = shapes(&a)[0].points[0];
+    assert_eq!((r.feather_in, r.feather_out), (V2::ZERO, V2::ZERO));
+}

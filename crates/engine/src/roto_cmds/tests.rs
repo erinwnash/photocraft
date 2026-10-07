@@ -728,3 +728,38 @@ fn roto_exports_as_a_standard_path_with_transforms_and_ops() {
     undo(&mut s);
     assert_eq!(s.active().unwrap().doc.paths.len(), 0);
 }
+
+#[test]
+fn feather_handles_follow_the_point_until_edited_and_cusp_and_smooth_reset_them() {
+    let mut s = with_roto_layer(200, 200);
+    let id = add_rect(&mut s, 40.0, 40.0, 80.0, 60.0);
+    let ids = point_ids(&shape(&s, id));
+    s.execute("roto.point.smooth", json!({"shape": id})).unwrap();
+    s.execute("roto.feather.set_point", json!({"shape": id, "id": ids[0], "offset": [-10, -10]})).unwrap();
+    let p = shape(&s, id).points[0];
+    assert_eq!((p.feather_in, p.feather_out), (V2::ZERO, V2::ZERO), "at first the feather point's bezier is the point's own");
+    // Edit the feather point's out handle on its own: the point's handles do not change; being a
+    // smooth point, the feather in handle swings to the other side.
+    s.execute("roto.point.set", json!({"shape": id, "id": ids[0], "featherOut": [4, 6]})).unwrap();
+    let q = shape(&s, id).points[0];
+    assert_eq!((q.tangent_in, q.tangent_out), (p.tangent_in, p.tangent_out));
+    assert_eq!(q.feather_out, V2::new(4.0, 6.0));
+    let (ein, eout) = (
+        V2::new(q.tangent_in.x + q.feather_in.x, q.tangent_in.y + q.feather_in.y),
+        V2::new(q.tangent_out.x + q.feather_out.x, q.tangent_out.y + q.feather_out.y),
+    );
+    assert!(
+        (ein.x * eout.y - ein.y * eout.x).abs() < 1e-6 && ein.x * eout.x + ein.y * eout.y < 0.0,
+        "feather handles collinear and opposite: {ein:?} {eout:?}"
+    );
+    // Smooth resets it to follow the source curve again.
+    s.execute("roto.point.smooth", json!({"shape": id, "ids": [ids[0]]})).unwrap();
+    let r = shape(&s, id).points[0];
+    assert_eq!((r.feather_in, r.feather_out), (V2::ZERO, V2::ZERO));
+    // A cusped point's feather point has no handle either.
+    s.execute("roto.point.set", json!({"shape": id, "id": ids[0], "featherOut": [4, 6], "featherIn": [1, 1]})).unwrap();
+    s.execute("roto.point.cusp", json!({"shape": id, "ids": [ids[0]]})).unwrap();
+    let c = shape(&s, id).points[0];
+    assert_eq!((c.tangent_in, c.tangent_out, c.feather_in, c.feather_out), (V2::ZERO, V2::ZERO, V2::ZERO, V2::ZERO));
+    assert_eq!(c.feather_pos, V2::new(-10.0, -10.0));
+}

@@ -100,6 +100,15 @@ pub enum Hit {
         shape: NodeId,
         point: PointId,
     },
+    /// A handle of the feather point's own bezier.
+    FeatherIn {
+        shape: NodeId,
+        point: PointId,
+    },
+    FeatherOut {
+        shape: NodeId,
+        point: PointId,
+    },
     /// On the outline between point `index` and the next, at `pos` (document px).
     Segment {
         shape: NodeId,
@@ -117,6 +126,10 @@ pub struct PointView {
     pub tangent_out: P2,
     /// The feather handle, when the point has a feather offset.
     pub feather: Option<P2>,
+    /// The tips of the feather point's own bezier handles (its point's handles plus the feather
+    /// point's changes); the feather point itself when it has none, or the point has no feather.
+    pub feather_in: P2,
+    pub feather_out: P2,
 }
 
 /// One shape as drawn.
@@ -175,12 +188,16 @@ fn view_of(shape: &Shape, enclosing: &[Transform2D]) -> ShapeView {
             let pos = at(p.pos);
             let tip = |t: V2| at(V2::new(p.pos.x + t.x, p.pos.y + t.y));
             let has_feather = p.feather_pos.x != 0.0 || p.feather_pos.y != 0.0;
+            let base = V2::new(p.pos.x + p.feather_pos.x, p.pos.y + p.feather_pos.y);
+            let feather_tip = |t: V2, f: V2| at(V2::new(base.x + t.x + f.x, base.y + t.y + f.y));
             PointView {
                 id: p.id,
                 pos,
                 tangent_in: tip(p.tangent_in),
                 tangent_out: tip(p.tangent_out),
-                feather: has_feather.then(|| at(V2::new(p.pos.x + p.feather_pos.x, p.pos.y + p.feather_pos.y))),
+                feather: has_feather.then(|| at(base)),
+                feather_in: feather_tip(p.tangent_in, p.feather_in),
+                feather_out: feather_tip(p.tangent_out, p.feather_out),
             }
         })
         .collect();
@@ -285,6 +302,12 @@ pub fn hit_test(views: &[ShapeView], sel: &Selection, at: P2, radius: f64) -> Hi
             for p in v.points.iter().filter(|p| sel.points.contains(&p.id)) {
                 if let Some(f) = p.feather {
                     b.consider(dist(at, f), Hit::Feather { shape: v.id, point: p.id });
+                    if dist(p.feather_in, f) > 1e-9 {
+                        b.consider(dist(at, p.feather_in), Hit::FeatherIn { shape: v.id, point: p.id });
+                    }
+                    if dist(p.feather_out, f) > 1e-9 {
+                        b.consider(dist(at, p.feather_out), Hit::FeatherOut { shape: v.id, point: p.id });
+                    }
                 }
                 if dist(p.tangent_in, p.pos) > 1e-9 {
                     b.consider(dist(at, p.tangent_in), Hit::TangentIn { shape: v.id, point: p.id });
@@ -385,6 +408,17 @@ pub fn tangent_params(shape: NodeId, point: PointId, out: bool, tip: P2, affine:
 pub fn feather_params(shape: NodeId, point: PointId, handle: P2, affine: &Affine, local_pos: P2, coalesce: &str) -> Option<Value> {
     let l = to_local(affine, handle)?;
     Some(json!({"shape": shape.0, "id": point.0, "offset": j([l[0] - local_pos[0], l[1] - local_pos[1]]), "coalesce": coalesce}))
+}
+
+/// `roto.point.set` params that put the tip of a feather handle of a point at `tip` (document px).
+/// The stored value is relative to the point's own handle, so it follows that handle until edited.
+pub fn feather_tangent_params(mask: &RotoMask, shape: NodeId, point: PointId, out: bool, tip: P2, affine: &Affine, coalesce: &str) -> Option<Value> {
+    let Some(Node::Shape(s)) = mask.find(shape) else { return None };
+    let p = s.points.iter().find(|q| q.id == point)?;
+    let l = to_local(affine, tip)?;
+    let own = if out { p.tangent_out } else { p.tangent_in };
+    let rel = [l[0] - (p.pos.x + p.feather_pos.x + own.x), l[1] - (p.pos.y + p.feather_pos.y + own.y)];
+    Some(json!({"shape": shape.0, "id": point.0, if out { "featherOut" } else { "featherIn" }: j(rel), "coalesce": coalesce}))
 }
 
 /// `roto.point.move` params that nudge the selected points by `delta` document px.

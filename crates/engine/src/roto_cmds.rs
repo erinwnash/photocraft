@@ -818,6 +818,24 @@ fn point_set(s: &mut Session, p: &Value) -> Result<Value> {
         q.feather_pos = feather.unwrap_or(q.feather_pos);
         q.feather_in = fin.unwrap_or(q.feather_in);
         q.feather_out = fout.unwrap_or(q.feather_out);
+        // The feather point's handles stay collinear on a smooth point too: moving one swings the
+        // other to the opposite side (relative to the point's own handle, scaled to its length).
+        if q.smooth {
+            let (len, mirror) = (|v: V2| v.x.hypot(v.y), |v: V2, k: f64| V2::new(-v.x * k, -v.y * k));
+            let eff = |t: V2, f: V2| V2::new(t.x + f.x, t.y + f.y);
+            let ratio = |own: V2, other: V2| if len(own) > 1e-12 { len(other) / len(own) } else { 1.0 };
+            match (fin, fout) {
+                (Some(f), None) => {
+                    let e = mirror(eff(q.tangent_in, f), ratio(q.tangent_in, q.tangent_out));
+                    q.feather_out = V2::new(e.x - q.tangent_out.x, e.y - q.tangent_out.y);
+                }
+                (None, Some(f)) => {
+                    let e = mirror(eff(q.tangent_out, f), ratio(q.tangent_out, q.tangent_in));
+                    q.feather_in = V2::new(e.x - q.tangent_in.x, e.y - q.tangent_in.y);
+                }
+                _ => {}
+            }
+        }
         Ok(Value::Null)
     })
 }
