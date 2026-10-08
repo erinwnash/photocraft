@@ -141,10 +141,8 @@ pub struct ShapeView {
     pub visible: bool,
     pub affine: Affine,
     pub points: Vec<PointView>,
-    /// The shape's editor colours (sRGB); `None` is the default.
-    pub point_color: Option<[u8; 3]>,
-    pub spline_color: Option<[u8; 3]>,
-    pub feather_color: Option<[u8; 3]>,
+    /// The shape's editor colour (sRGB); `None` is the default.
+    pub color: Option<[u8; 3]>,
 }
 
 fn apply_chain(chain: &[Transform2D], p: V2) -> V2 {
@@ -205,17 +203,7 @@ fn view_of(shape: &Shape, enclosing: &[Transform2D]) -> ShapeView {
             }
         })
         .collect();
-    ShapeView {
-        id: shape.id,
-        closed: shape.closed,
-        locked: shape.locked,
-        visible: shape.visible,
-        affine: a,
-        points,
-        point_color: shape.point_color,
-        spline_color: shape.spline_color,
-        feather_color: shape.feather_color,
-    }
+    ShapeView { id: shape.id, closed: shape.closed, locked: shape.locked, visible: shape.visible, affine: a, points, color: shape.color }
 }
 
 fn collect_views(g: &Group, enclosing: &mut Vec<Transform2D>, out: &mut Vec<ShapeView>) {
@@ -281,10 +269,26 @@ pub fn outline_samples(v: &ShapeView, per_segment: usize) -> Vec<(usize, P2)> {
     out
 }
 
-/// The feather outline as drawn: each point's feather handle (its own position when it has none)
-/// joined by the shape's curve parameters. Used for the dashed feather line.
-pub fn feather_polyline(v: &ShapeView) -> Vec<P2> {
-    v.points.iter().map(|p| p.feather.unwrap_or(p.pos)).collect()
+/// The feather outline as drawn: a bezier curve through the feather points (a point's own position
+/// when it has none), with the feather handles as its control points, sampled like the shape's own
+/// outline. Used for the dashed feather line.
+pub fn feather_samples(v: &ShapeView, per_segment: usize) -> Vec<P2> {
+    let n = v.points.len();
+    let segs = if v.closed { n } else { n.saturating_sub(1) };
+    let at = |p: &PointView| p.feather.unwrap_or(p.pos);
+    let mut out = Vec::with_capacity(segs * per_segment + 1);
+    for i in 0..segs {
+        let (Some(a), Some(b)) = (v.points.get(i), v.points.get((i + 1) % n)) else { continue };
+        for k in 0..per_segment {
+            out.push(cubic(at(a), a.feather_out, b.feather_in, at(b), k as f64 / per_segment as f64));
+        }
+    }
+    if !v.closed
+        && let Some(last) = v.points.last()
+    {
+        out.push(at(last));
+    }
+    out
 }
 
 /// What is under `at`, searching the topmost shape first. Within a shape the selected points'

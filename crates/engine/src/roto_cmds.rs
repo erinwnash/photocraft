@@ -232,7 +232,7 @@ fn node_json(n: &Node) -> Value {
         Node::Shape(s) => json!({
             "kind": "shape", "id": s.id.0, "name": s.name, "visible": s.visible, "locked": s.locked, "opacity": s.opacity,
             "blendOp": blend_name(s.blend_op), "invert": s.invert, "closed": s.closed, "blur": s.blur,
-            "pointColor": s.point_color, "splineColor": s.spline_color, "featherColor": s.feather_color,
+            "color": s.color,
             "falloff": falloff_name(s.falloff), "transform": transform_json(&s.transform),
             "points": s.points.iter().map(point_json).collect::<Vec<_>>(),
         }),
@@ -675,7 +675,7 @@ fn node_set(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let invert = opt_bool(CMD, p, "invert")?;
     let closed = opt_bool(CMD, p, "closed")?;
-    let (point_color, spline_color, feather_color) = (opt_color(CMD, p, "pointColor")?, opt_color(CMD, p, "splineColor")?, opt_color(CMD, p, "featherColor")?);
+    let color = opt_color(CMD, p, "color")?;
     let blur = match opt_f64(CMD, p, "blur")? {
         None => None,
         Some(b) if (0.0..=f64::from(MAX_BLUR)).contains(&b) => Some(b as f32),
@@ -694,9 +694,7 @@ fn node_set(s: &mut Session, p: &Value) -> Result<Value> {
                 sh.blend_op = blend.unwrap_or(sh.blend_op);
                 sh.invert = invert.unwrap_or(sh.invert);
                 sh.closed = closed.unwrap_or(sh.closed);
-                sh.point_color = point_color.unwrap_or(sh.point_color);
-                sh.spline_color = spline_color.unwrap_or(sh.spline_color);
-                sh.feather_color = feather_color.unwrap_or(sh.feather_color);
+                sh.color = color.unwrap_or(sh.color);
                 sh.blur = blur.unwrap_or(sh.blur);
                 sh.falloff = fall.unwrap_or(sh.falloff);
             }
@@ -1515,7 +1513,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "roto.node.set",
             "Roto Node Settings",
             [],
-            r##"{"layer":id?,"id":nodeId,"visible":bool?,"locked":bool?,"opacity":0..1?,"blendOp":"union|subtract|intersect|max|min|multiply|difference"?,"invert":bool? (shapes),"closed":bool? (shapes: join or open the last and first points),"pointColor|splineColor|featherColor":[r,g,b]|null? (shapes: editor colours, 0-255; null = default, the feather default is the point colour at 80% value),"blur":px? (shapes),"falloff":"linear|smooth|easeIn|easeOut"? (shapes)}"##,
+            r##"{"layer":id?,"id":nodeId,"visible":bool?,"locked":bool?,"opacity":0..1?,"blendOp":"union|subtract|intersect|max|min|multiply|difference"?,"invert":bool? (shapes),"closed":bool? (shapes: join or open the last and first points),"color":[r,g,b]|null? (shapes: the spline's editor colour, 0-255; its feather points use it at 80% value; null = default),"blur":px? (shapes),"falloff":"linear|smooth|easeIn|easeOut"? (shapes)}"##,
             has_roto,
             node_set
         ),

@@ -762,24 +762,37 @@ fn overlay_dots(a: &PhotocraftApp) -> Vec<(egui::Pos2, Color32)> {
 }
 
 #[test]
-fn the_feather_bezier_handles_are_drawn_in_the_feather_colour() {
+fn the_feather_bezier_handles_are_drawn_in_the_spline_colour_at_80_percent() {
     let mut a = with_rect();
     let sh = shapes(&a)[0].id;
     let p0 = shapes(&a)[0].points[0].id;
     a.run("roto.point.smooth", json!({"shape": sh.0})).unwrap();
     a.run("roto.feather.set_point", json!({"shape": sh.0, "id": p0.0, "offset": [-12, -12]})).unwrap();
     click(&mut a, [20.0, 20.0], Modifiers::NONE);
-    // Default feather colour: the point colour (orange) at 80% of its value.
+    // Default: the shape is selected, so orange; its feather points are that at 80% of its value.
     let want = darken(SELECTED, 0.8);
     assert_eq!(want, Color32::from_rgb(204, 141, 0));
     let dots = overlay_dots(&a);
     assert!(dots.iter().filter(|(_, c)| *c == want).count() >= 2, "both feather handle tips are drawn: {dots:?}");
-    // A custom feather colour is used instead; the points colour changes the handles of the point.
-    a.run("roto.node.set", json!({"id": sh.0, "featherColor": [10, 200, 30], "pointColor": [255, 0, 255]})).unwrap();
+    // One colour for the whole spline: points and handles use it, feather points 80% of it.
+    a.run("roto.node.set", json!({"id": sh.0, "color": [255, 0, 255]})).unwrap();
     let dots = overlay_dots(&a);
-    assert!(dots.iter().filter(|(_, c)| *c == Color32::from_rgb(10, 200, 30)).count() >= 2);
-    assert!(dots.iter().any(|(_, c)| *c == Color32::from_rgb(255, 0, 255)), "the point's own handle uses the point colour");
-    // Resetting the feather colour goes back to 80% of the (now magenta) point colour.
-    a.run("roto.node.set", json!({"id": sh.0, "featherColor": null})).unwrap();
-    assert!(overlay_dots(&a).iter().any(|(_, c)| *c == Color32::from_rgb(204, 0, 204)));
+    assert!(dots.iter().any(|(_, c)| *c == Color32::from_rgb(255, 0, 255)), "the point's own handle uses the colour");
+    assert!(dots.iter().filter(|(_, c)| *c == Color32::from_rgb(204, 0, 204)).count() >= 2);
+}
+
+#[test]
+fn the_dashed_feather_line_follows_the_feather_bezier_handles() {
+    let mut a = with_rect();
+    let sh = shapes(&a)[0].id;
+    a.run("roto.point.smooth", json!({"shape": sh.0})).unwrap();
+    a.run("roto.feather.set_all", json!({"distance": 10})).unwrap();
+    let curve = |a: &PhotocraftApp| -> Vec<P2> { edit::feather_samples(&edit::shape_views(&mask(a)).remove(0), 16) };
+    let before = curve(&a);
+    // Pull one feather handle out: the drawn feather outline bends with it.
+    let id = shapes(&a)[0].points[0].id;
+    a.run("roto.point.set", json!({"shape": sh.0, "id": id.0, "featherOut": [30, -40]})).unwrap();
+    let after = curve(&a);
+    assert_eq!(before.len(), after.len());
+    assert!(before.iter().zip(&after).any(|(b, c)| (b[0] - c[0]).hypot(b[1] - c[1]) > 1.0), "the feather curve moved with its handle");
 }

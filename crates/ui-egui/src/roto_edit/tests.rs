@@ -221,11 +221,15 @@ fn nudge_moves_the_whole_selection() {
 }
 
 #[test]
-fn feather_polyline_uses_handles_where_present() {
+fn feather_samples_pass_through_the_feather_points_and_use_their_handles() {
     let mut s = square(1, 0.0, 0.0, 10.0, 10.0);
     s.points[0].feather_pos = V2::new(-2.0, -2.0);
-    let v = view_of_shape(&mask_of(vec![s]), NodeId(1)).unwrap();
-    let poly = feather_polyline(&v);
-    assert_eq!(poly.len(), 4);
-    assert!(near(poly[0], [-2.0, -2.0]) && near(poly[1], [10.0, 0.0]));
+    let v = view_of_shape(&mask_of(vec![s.clone()]), NodeId(1)).unwrap();
+    let poly = feather_samples(&v, 4);
+    assert_eq!(poly.len(), 16);
+    assert!(near(poly[0], [-2.0, -2.0]) && near(poly[4], [10.0, 0.0]), "starts at each feather point (its own position when it has none)");
+    // A feather handle bends the curve between its point and the next.
+    s.points[0].feather_out = V2::new(0.0, -8.0);
+    let bent = feather_samples(&view_of_shape(&mask_of(vec![s]), NodeId(1)).unwrap(), 4);
+    assert!(bent[2][1] < poly[2][1] - 1.0, "{:?} vs {:?}", bent[2], poly[2]);
 }

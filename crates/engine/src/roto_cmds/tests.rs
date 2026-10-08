@@ -765,27 +765,25 @@ fn feather_handles_follow_the_point_until_edited_and_cusp_and_smooth_reset_them(
 }
 
 #[test]
-fn shape_colours_are_set_reset_and_validated() {
+fn a_shape_has_one_colour_that_is_set_reset_and_validated() {
     let mut s = with_roto_layer(100, 100);
     let id = add_rect(&mut s, 10.0, 10.0, 30.0, 30.0);
-    assert_eq!((shape(&s, id).point_color, shape(&s, id).spline_color, shape(&s, id).feather_color), (None, None, None));
-    s.execute("roto.node.set", json!({"id": id, "pointColor": [255, 0, 128], "splineColor": [1, 2, 3]})).unwrap();
-    let sh = shape(&s, id);
-    assert_eq!((sh.point_color, sh.spline_color, sh.feather_color), (Some([255, 0, 128]), Some([1, 2, 3]), None));
-    // Other settings leave colours alone; null resets just that one.
-    s.execute("roto.node.set", json!({"id": id, "blur": 2, "splineColor": null})).unwrap();
-    let sh = shape(&s, id);
-    assert_eq!((sh.point_color, sh.spline_color), (Some([255, 0, 128]), None));
-    for bad in [json!({"pointColor": [256, 0, 0]}), json!({"pointColor": [1, 2]}), json!({"featherColor": "red"}), json!({"splineColor": [-1, 0, 0]})] {
+    assert_eq!(shape(&s, id).color, None);
+    s.execute("roto.node.set", json!({"id": id, "color": [255, 0, 128]})).unwrap();
+    assert_eq!(shape(&s, id).color, Some([255, 0, 128]));
+    // Other settings leave it alone; null resets it.
+    s.execute("roto.node.set", json!({"id": id, "blur": 2})).unwrap();
+    assert_eq!(shape(&s, id).color, Some([255, 0, 128]));
+    for bad in [json!({"color": [256, 0, 0]}), json!({"color": [1, 2]}), json!({"color": "red"}), json!({"color": [-1, 0, 0]})] {
         let mut p = bad.clone();
         p["id"] = json!(id);
         assert!(s.execute("roto.node.set", p).is_err(), "{bad}");
     }
-    assert_eq!(shape(&s, id).point_color, Some([255, 0, 128]));
-    // They survive a duplicate and the info output.
+    assert_eq!(shape(&s, id).color, Some([255, 0, 128]));
     let info = s.execute("layer.roto.info", json!({})).unwrap().to_string();
-    assert!(info.contains("pointColor"), "{info}");
+    assert!(info.contains("\"color\""), "{info}");
+    s.execute("roto.node.set", json!({"id": id, "color": null})).unwrap();
+    assert_eq!(shape(&s, id).color, None);
     undo(&mut s);
-    undo(&mut s);
-    assert_eq!(shape(&s, id).point_color, None);
+    assert_eq!(shape(&s, id).color, Some([255, 0, 128]));
 }

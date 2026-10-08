@@ -719,14 +719,12 @@ fn darken(c: Color32, k: f32) -> Color32 {
     Color32::from_rgb(f(c.r()), f(c.g()), f(c.b()))
 }
 
-/// The colours a shape is drawn with: its points and bezier handles, its outline, and its feather
-/// points (by default the point colour at 80% of its value).
+/// The colours a shape is drawn with, from its one colour: (points, outline, feather points). The
+/// feather points are that colour at 80% of its value. Without a colour set: cyan, or orange while
+/// the shape is selected.
 fn shape_colors(v: &edit::ShapeView, selected_shape: bool) -> (Color32, Color32, Color32) {
-    let rgb = |c: [u8; 3]| Color32::from_rgb(c[0], c[1], c[2]);
-    let point = v.point_color.map_or(SELECTED, rgb);
-    let spline = v.spline_color.map_or(if selected_shape { SELECTED } else { OUTLINE }, rgb);
-    let feather = v.feather_color.map_or_else(|| darken(point, 0.8), rgb);
-    (point, spline, feather)
+    let base = v.color.map_or(if selected_shape { SELECTED } else { OUTLINE }, |c| Color32::from_rgb(c[0], c[1], c[2]));
+    (base, base, darken(base, 0.8))
 }
 
 /// Shapes, points, handles and the gesture in progress, over the canvas.
@@ -761,7 +759,7 @@ pub fn draw_overlay(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform
             painter.add(if v.closed { egui::Shape::closed_line(line, Stroke::new(w, col)) } else { egui::Shape::line(line, Stroke::new(w, col)) });
         }
         if !app.ui.roto.hide_feather && v.points.iter().any(|p| p.feather.is_some()) {
-            let mut f: Vec<Pos2> = edit::feather_polyline(&v).into_iter().map(|q| to_screen(xf, q)).collect();
+            let mut f: Vec<Pos2> = edit::feather_samples(&v, 16).into_iter().map(|q| to_screen(xf, q)).collect();
             if v.closed
                 && let Some(first) = f.first().copied()
             {
@@ -1119,9 +1117,10 @@ pub fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 }
             });
         }
-        // The selected shape's editor colours: points (and bezier handles), spline, feather points.
+        // The selected shape's editor colour: its outline and points; the feather points follow it
+        // at 80% of its value.
         if let Some(s) = selected_shape {
-            let (point, spline, feather) = shape_colors(
+            let (shown, _, _) = shape_colors(
                 &edit::ShapeView {
                     id: s.id,
                     closed: s.closed,
@@ -1129,26 +1128,18 @@ pub fn panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                     visible: s.visible,
                     affine: Default::default(),
                     points: Vec::new(),
-                    point_color: s.point_color,
-                    spline_color: s.spline_color,
-                    feather_color: s.feather_color,
+                    color: s.color,
                 },
                 true,
             );
             ui.horizontal_wrapped(|ui| {
-                for (key, label, shown, set) in [
-                    ("pointColor", tl!("Points"), point, s.point_color.is_some()),
-                    ("splineColor", tl!("Spline"), spline, s.spline_color.is_some()),
-                    ("featherColor", tl!("Feather points"), feather, s.feather_color.is_some()),
-                ] {
-                    lbl(ui, label);
-                    let mut rgb = [shown.r(), shown.g(), shown.b()];
-                    if ui.color_edit_button_srgb(&mut rgb).changed() {
-                        acts.push(("roto.node.set", json!({"id": s.id.0, key: rgb, "coalesce": format!("roto-color-{}-{key}", s.id.0)})));
-                    }
-                    if set && crate::widgets::secondary_button(ui, "↺", 24.0).on_hover_text(tl!("Back to the default colour")).clicked() {
-                        acts.push(("roto.node.set", json!({"id": s.id.0, key: Value::Null})));
-                    }
+                lbl(ui, tl!("Color"));
+                let mut rgb = [shown.r(), shown.g(), shown.b()];
+                if ui.color_edit_button_srgb(&mut rgb).changed() {
+                    acts.push(("roto.node.set", json!({"id": s.id.0, "color": rgb, "coalesce": format!("roto-color-{}", s.id.0)})));
+                }
+                if s.color.is_some() && crate::widgets::secondary_button(ui, "↺", 24.0).on_hover_text(tl!("Back to the default colour")).clicked() {
+                    acts.push(("roto.node.set", json!({"id": s.id.0, "color": Value::Null})));
                 }
             });
         }

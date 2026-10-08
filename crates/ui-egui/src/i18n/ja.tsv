@@ -1623,7 +1623,6 @@
 	Pillow Emboss	ピローエンボス
 	Pixel Replacement	ピクセルの置き換え
 	Pixels	ピクセル
-	Points	ポイント
 	Polygon Tool	多角形ツール
 	Polygonal Lasso Tool	多角形選択ツール
 	Portrait, 4 x 6	縦向き、4 x 6
@@ -2015,6 +2014,4 @@
 	Smooth points: make them bezier points with handles that average their neighbours	スムーズ: 隣接ポイントを平均したハンドルを持つベジェポイントにします
 	To Path	パスに変換
 	Export the node chosen here, or the whole mask, as a standard path (the work path)	選択したノード、またはマスク全体を標準パス（ワークパス）として書き出します
-	Spline	スプライン
-	Feather points	ぼかしポイント
 	Back to the default colour	既定の色に戻す
